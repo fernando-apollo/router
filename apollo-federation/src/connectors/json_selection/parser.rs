@@ -304,7 +304,9 @@ impl JSONSelection {
     fn parse_span(input: Span) -> ParseResult<Self> {
         match get_connect_spec(&input) {
             ConnectSpec::V0_1 | ConnectSpec::V0_2 => Self::parse_span_v0_2(input),
-            ConnectSpec::V0_3 | ConnectSpec::V0_4 | ConnectSpec::V0_5 => Self::parse_span_v0_3(input),
+            ConnectSpec::V0_3 | ConnectSpec::V0_4 | ConnectSpec::V0_5 => {
+                Self::parse_span_v0_3(input)
+            }
         }
     }
 
@@ -677,7 +679,8 @@ impl NamedSelection {
         let (remainder, name) = recognize((
             satisfy(|c: char| c.is_ascii_uppercase()),
             take_while(|c: char| c.is_ascii_alphanumeric() || c == '_'),
-        )).parse(input)?;
+        ))
+        .parse(input)?;
 
         let name_str = name.fragment().to_string();
         let range = Some(name.location_offset()..name.location_offset() + name_str.len());
@@ -917,18 +920,19 @@ impl NamedSelection {
                 spaces_or_comments,
                 opt(ranged_span("...")),
                 PathSelection::parse,
-            ).parse(input.clone())
-            .map(|(remainder, (_spaces, spread, path))| {
-                let prefix = if let Some(spread) = spread {
-                    // Spread syntax is fully supported in V0_5
-                    NamingPrefix::Spread(spread.range())
-                } else if path.is_anonymous() && path.has_subselection() {
-                    NamingPrefix::Spread(None)
-                } else {
-                    NamingPrefix::None
-                };
-                (remainder, Self { prefix, path })
-            })
+            )
+                .parse(input.clone())
+                .map(|(remainder, (_spaces, spread, path))| {
+                    let prefix = if let Some(spread) = spread {
+                        // Spread syntax is fully supported in V0_5
+                        NamingPrefix::Spread(spread.range())
+                    } else if path.is_anonymous() && path.has_subselection() {
+                        NamingPrefix::Spread(None)
+                    } else {
+                        NamingPrefix::None
+                    };
+                    (remainder, Self { prefix, path })
+                })
         }
     }
 

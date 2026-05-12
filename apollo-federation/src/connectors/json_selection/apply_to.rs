@@ -6497,15 +6497,14 @@ mod tests {
 
     #[test]
     fn expanded_spread_named_only_outputs_mapped_fields() {
-        use std::collections::HashSet;
         use crate::connectors::mapping_registry::MappingDefinition;
         use crate::connectors::mapping_registry::MappingRegistry;
         use apollo_compiler::name;
+        use std::collections::HashSet;
 
         // Build a registry with User -> "id name"
         let mut registry = MappingRegistry::new();
-        let user_sel =
-            JSONSelection::parse_with_spec("id name", ConnectSpec::V0_5).unwrap();
+        let user_sel = JSONSelection::parse_with_spec("id name", ConnectSpec::V0_5).unwrap();
         if let TopLevelSelection::Named(sub) = user_sel.inner {
             registry.insert_mapping(
                 name!(User),
@@ -6589,16 +6588,15 @@ mod tests {
 
     #[test]
     fn expand_replaces_spread_named_in_subselection() {
-        use std::collections::HashSet;
+        use crate::connectors::json_selection::PrettyPrintable;
         use crate::connectors::mapping_registry::MappingDefinition;
         use crate::connectors::mapping_registry::MappingRegistry;
-        use crate::connectors::json_selection::PrettyPrintable;
         use apollo_compiler::name;
+        use std::collections::HashSet;
 
         // Build a registry with Address -> "street city"
         let mut registry = MappingRegistry::new();
-        let addr_sel =
-            JSONSelection::parse_with_spec("street city", ConnectSpec::V0_5).unwrap();
+        let addr_sel = JSONSelection::parse_with_spec("street city", ConnectSpec::V0_5).unwrap();
         if let TopLevelSelection::Named(sub) = addr_sel.inner {
             registry.insert_mapping(
                 name!(Address),
@@ -6613,11 +6611,8 @@ mod tests {
         // A selection where SpreadNamed appears inside a method argument's subselection.
         // The ->echo method takes a LitExpr argument, but the top-level spread
         // is what we're testing here -- verify expansion works for the common case.
-        let selection = JSONSelection::parse_with_spec(
-            "addr { ...Address }",
-            ConnectSpec::V0_5,
-        )
-        .unwrap();
+        let selection =
+            JSONSelection::parse_with_spec("addr { ...Address }", ConnectSpec::V0_5).unwrap();
 
         let expanded = registry.expand_selection(&selection).unwrap();
         let pretty = expanded.pretty_print();

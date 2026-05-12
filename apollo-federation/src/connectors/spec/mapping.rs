@@ -299,11 +299,13 @@ mod tests {
         let mapping = &mappings[0];
         assert_eq!(mapping.type_name, name!(Post));
         assert!(mapping.selection.is_some());
-        assert!(mapping
-            .selection
-            .as_ref()
-            .unwrap()
-            .contains("authorName: author.name"));
+        assert!(
+            mapping
+                .selection
+                .as_ref()
+                .unwrap()
+                .contains("authorName: author.name")
+        );
     }
 
     #[test]
@@ -371,11 +373,13 @@ mod tests {
         // Find the explicit one
         let explicit_mapping = mappings.iter().find(|m| m.alias == name!(TaxV2)).unwrap();
         assert!(explicit_mapping.selection.is_some());
-        assert!(explicit_mapping
-            .selection
-            .as_ref()
-            .unwrap()
-            .contains("tax_amount"));
+        assert!(
+            explicit_mapping
+                .selection
+                .as_ref()
+                .unwrap()
+                .contains("tax_amount")
+        );
     }
 
     #[test]

@@ -28,6 +28,7 @@ use self::connect::CONNECT_DIRECTIVE_NAME_IN_SPEC;
 use self::mapping::MAPPING_DIRECTIVE_NAME_IN_SPEC;
 use self::source::SOURCE_DIRECTIVE_NAME_IN_SPEC;
 use crate::connectors::spec::type_and_directive_specifications::directive_specifications;
+use crate::connectors::spec::type_and_directive_specifications::mapping_directive_spec_if_applicable;
 use crate::connectors::spec::type_and_directive_specifications::type_specifications;
 use crate::connectors::validation::Code;
 use crate::connectors::validation::Message;
@@ -236,7 +237,11 @@ impl SpecDefinition for ConnectSpecDefinition {
     }
 
     fn directive_specs(&self) -> Vec<Box<dyn TypeAndDirectiveSpecification>> {
-        directive_specifications()
+        let mut specs = directive_specifications();
+        if let Some(mapping) = mapping_directive_spec_if_applicable(&self.url.version) {
+            specs.push(mapping);
+        }
+        specs
     }
 
     fn type_specs(&self) -> Vec<Box<dyn TypeAndDirectiveSpecification>> {

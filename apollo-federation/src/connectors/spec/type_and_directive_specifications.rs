@@ -22,8 +22,6 @@ use super::connect::CONNECT_SOURCE_ARGUMENT_NAME;
 use super::connect::IS_SUCCESS_ARGUMENT_NAME;
 use super::errors::ERRORS_ARGUMENT_NAME;
 use super::errors::ERRORS_NAME_IN_SPEC;
-use super::mapping::MAPPING_AS_ARGUMENT_NAME;
-use super::mapping::MAPPING_DIRECTIVE_NAME_IN_SPEC;
 use super::http::HEADERS_ARGUMENT_NAME;
 use super::http::HTTP_ARGUMENT_NAME;
 use super::http::HTTP_HEADER_MAPPING_FROM_ARGUMENT_NAME;
@@ -33,6 +31,8 @@ use super::http::HTTP_HEADER_MAPPING_VALUE_ARGUMENT_NAME;
 use super::http::PATH_ARGUMENT_NAME;
 use super::http::QUERY_PARAMS_ARGUMENT_NAME;
 use super::http::URL_PATH_TEMPLATE_SCALAR_NAME;
+use super::mapping::MAPPING_AS_ARGUMENT_NAME;
+use super::mapping::MAPPING_DIRECTIVE_NAME_IN_SPEC;
 use super::source::BaseUrl;
 use super::source::SOURCE_DIRECTIVE_NAME_IN_SPEC;
 use super::source::SOURCE_HTTP_NAME_IN_SPEC;
@@ -320,13 +320,20 @@ fn connect_http_spec() -> InputObjectTypeSpecification {
 }
 
 pub(crate) fn directive_specifications() -> Vec<Box<dyn TypeAndDirectiveSpecification>> {
-    // @mapping is included unconditionally; runtime gating in
-    // extract_mapping_directive_arguments enforces the v0.5+ requirement.
     vec![
         Box::new(connect_directive_spec()),
         Box::new(source_directive_spec()),
-        Box::new(mapping_directive_spec()),
     ]
+}
+
+pub(crate) fn mapping_directive_spec_if_applicable(
+    version: &crate::link::spec::Version,
+) -> Option<Box<dyn TypeAndDirectiveSpecification>> {
+    if version.major > 0 || version.minor >= 5 {
+        Some(Box::new(mapping_directive_spec()))
+    } else {
+        None
+    }
 }
 
 // connect/v0.1:

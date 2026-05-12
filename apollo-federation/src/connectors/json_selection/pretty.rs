@@ -391,11 +391,7 @@ impl PrettyPrintable for NamedSelection {
                         }
                         result.push_str(arg.name.as_str());
                         result.push_str(": ");
-                        result.push_str(
-                            &arg.value
-                                .as_ref()
-                                .pretty_print_with_indentation(true, 0),
-                        );
+                        result.push_str(&arg.value.as_ref().pretty_print_with_indentation(true, 0));
                     }
                     result.push(')');
                 }
