@@ -1,0 +1,206 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1300 950">
+  <defs>
+    <style>
+      .title { font: bold 20px sans-serif; fill: #1a1a2e; }
+      .subtitle { font: italic 14px sans-serif; fill: #666; }
+      .actor { font: bold 11px sans-serif; fill: #fff; }
+      .actor-box { fill: #7b2cbf; stroke: #5a189a; stroke-width: 2; rx: 6; }
+      .lifeline { stroke: #c77dff; stroke-width: 1.5; stroke-dasharray: 6,4; }
+      .message { font: 11px sans-serif; fill: #1a1a2e; }
+      .message-bold { font: bold 11px sans-serif; fill: #1a1a2e; }
+      .arrow { stroke: #7b2cbf; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+      .arrow-return { stroke: #c77dff; stroke-width: 1.5; stroke-dasharray: 5,3; fill: none; marker-end: url(#arrowhead-light); }
+      .arrow-http { stroke: #e63946; stroke-width: 2; fill: none; marker-end: url(#arrowhead-http); }
+      .arrow-http-return { stroke: #e63946; stroke-width: 1.5; stroke-dasharray: 5,3; fill: none; marker-end: url(#arrowhead-http); }
+      .activation { fill: #e0aaff; stroke: #c77dff; stroke-width: 1; }
+      .note { fill: #f3e8ff; stroke: #c77dff; stroke-width: 1; rx: 4; }
+      .note-text { font: 10px sans-serif; fill: #5a189a; }
+      .phase-label { font: bold 13px sans-serif; fill: #5a189a; }
+      .phase-box { fill: #f3e8ff; stroke: #c77dff; stroke-width: 1; rx: 4; }
+      .data-box { fill: #fff; stroke: #7b2cbf; stroke-width: 1.5; rx: 4; }
+      .data-text { font: 10px monospace; fill: #5a189a; }
+      .external { fill: #e63946; stroke: #9d0208; stroke-width: 2; rx: 6; }
+      .external-text { font: bold 11px sans-serif; fill: #fff; }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#7b2cbf"/>
+    </marker>
+    <marker id="arrowhead-light" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#c77dff"/>
+    </marker>
+    <marker id="arrowhead-http" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#e63946"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="650" y="35" text-anchor="middle" class="title">Phase 3: Request Execution Flow</text>
+  <text x="650" y="55" text-anchor="middle" class="subtitle">From GraphQL Query to HTTP Connector Request</text>
+
+  <!-- Actors -->
+  <g id="actors">
+    <!-- Client -->
+    <rect x="30" y="75" width="90" height="40" class="actor-box"/>
+    <text x="75" y="100" text-anchor="middle" class="actor">Client</text>
+    <line x1="75" y1="115" x2="75" y2="900" class="lifeline"/>
+
+    <!-- Router -->
+    <rect x="150" y="75" width="100" height="40" class="actor-box"/>
+    <text x="200" y="100" text-anchor="middle" class="actor">Router Service</text>
+    <line x1="200" y1="115" x2="200" y2="900" class="lifeline"/>
+
+    <!-- Query Planner -->
+    <rect x="280" y="75" width="100" height="40" class="actor-box"/>
+    <text x="330" y="100" text-anchor="middle" class="actor">QueryPlanner</text>
+    <line x1="330" y1="115" x2="330" y2="900" class="lifeline"/>
+
+    <!-- Request Service -->
+    <rect x="410" y="75" width="110" height="40" class="actor-box"/>
+    <text x="465" y="100" text-anchor="middle" class="actor">request_service</text>
+    <line x1="465" y1="115" x2="465" y2="900" class="lifeline"/>
+
+    <!-- make_requests -->
+    <rect x="550" y="75" width="100" height="40" class="actor-box"/>
+    <text x="600" y="100" text-anchor="middle" class="actor">make_requests</text>
+    <line x1="600" y1="115" x2="600" y2="900" class="lifeline"/>
+
+    <!-- HttpJsonTransport -->
+    <rect x="680" y="75" width="120" height="40" class="actor-box"/>
+    <text x="740" y="100" text-anchor="middle" class="actor">HttpJsonTransport</text>
+    <line x1="740" y1="115" x2="740" y2="900" class="lifeline"/>
+
+    <!-- JSONSelection -->
+    <rect x="830" y="75" width="100" height="40" class="actor-box"/>
+    <text x="880" y="100" text-anchor="middle" class="actor">JSONSelection</text>
+    <line x1="880" y1="115" x2="880" y2="900" class="lifeline"/>
+
+    <!-- HTTP Client -->
+    <rect x="960" y="75" width="100" height="40" class="actor-box"/>
+    <text x="1010" y="100" text-anchor="middle" class="actor">HTTP Client</text>
+    <line x1="1010" y1="115" x2="1010" y2="900" class="lifeline"/>
+
+    <!-- External API -->
+    <rect x="1100" y="75" width="100" height="40" class="external"/>
+    <text x="1150" y="100" text-anchor="middle" class="external-text">External API</text>
+    <line x1="1150" y1="115" x2="1150" y2="900" class="lifeline" stroke="#e63946"/>
+  </g>
+
+  <!-- Phase 1: Query Planning -->
+  <rect x="15" y="130" width="1185" height="100" class="phase-box" opacity="0.3"/>
+  <text x="30" y="150" class="phase-label">1. Query Planning</text>
+
+  <rect x="70" y="160" width="10" height="60" class="activation"/>
+  <rect x="195" y="170" width="10" height="40" class="activation"/>
+  <rect x="325" y="180" width="10" height="20" class="activation"/>
+
+  <path d="M75,165 L195,165" class="arrow"/>
+  <text x="135" y="160" text-anchor="middle" class="message">GraphQL Query</text>
+
+  <path d="M200,180 L325,180" class="arrow"/>
+  <text x="262" y="175" text-anchor="middle" class="message">plan(query)</text>
+
+  <path d="M325,195 L205,195" class="arrow-return"/>
+  <text x="265" y="215" text-anchor="middle" class="message">QueryPlan { Fetch nodes }</text>
+
+  <!-- Phase 2: Connector Identification -->
+  <rect x="15" y="235" width="1185" height="120" class="phase-box" opacity="0.3"/>
+  <text x="30" y="255" class="phase-label">2. Connector Dispatch</text>
+
+  <rect x="195" y="270" width="10" height="75" class="activation"/>
+  <rect x="460" y="285" width="10" height="50" class="activation"/>
+
+  <path d="M200,280 L460,280" class="arrow"/>
+  <text x="330" y="275" text-anchor="middle" class="message-bold">execute_fetch(service="products_Query.product")</text>
+
+  <!-- Note: Connector lookup -->
+  <rect x="480" y="260" width="200" height="45" class="note"/>
+  <text x="490" y="275" class="note-text">get_connectors(ctx)</text>
+  <text x="490" y="288" class="note-text">connectors.get(service_name)</text>
+  <text x="490" y="301" class="note-text">→ Connector { transport, selection }</text>
+
+  <path d="M465,330 L205,330" class="arrow-return"/>
+  <text x="335" y="345" text-anchor="middle" class="message">connector + request data</text>
+
+  <!-- Phase 3: Request Building -->
+  <rect x="15" y="360" width="1185" height="200" class="phase-box" opacity="0.3"/>
+  <text x="30" y="380" class="phase-label">3. HTTP Request Building</text>
+
+  <rect x="460" y="395" width="10" height="155" class="activation"/>
+  <rect x="595" y="405" width="10" height="135" class="activation"/>
+  <rect x="735" y="420" width="10" height="50" class="activation"/>
+  <rect x="875" y="485" width="10" height="45" class="activation"/>
+
+  <path d="M465,405 L595,405" class="arrow"/>
+  <text x="530" y="400" text-anchor="middle" class="message">make_requests(req, connector)</text>
+
+  <path d="M600,420 L735,420" class="arrow"/>
+  <text x="667" y="415" text-anchor="middle" class="message">make_uri(inputs)</text>
+
+  <!-- Data box: Inputs -->
+  <rect x="755" y="395" width="180" height="70" class="data-box"/>
+  <text x="765" y="410" class="data-text">RequestInputs {</text>
+  <text x="765" y="423" class="data-text">  args: $args values,</text>
+  <text x="765" y="436" class="data-text">  context: router ctx,</text>
+  <text x="765" y="449" class="data-text">  env: env vars,</text>
+  <text x="765" y="462" class="data-text">  headers: req headers }</text>
+
+  <path d="M735,465 L605,465" class="arrow-return"/>
+  <text x="670" y="480" text-anchor="middle" class="message">URI with interpolated vars</text>
+
+  <path d="M600,490 L875,490" class="arrow"/>
+  <text x="737" y="485" text-anchor="middle" class="message">body selection.apply_with_vars(inputs)</text>
+
+  <path d="M875,525 L605,525" class="arrow-return"/>
+  <text x="740" y="540" text-anchor="middle" class="message">JSON request body</text>
+
+  <!-- Phase 4: HTTP Execution -->
+  <rect x="15" y="565" width="1185" height="120" class="phase-box" opacity="0.3"/>
+  <text x="30" y="585" class="phase-label">4. HTTP Request Execution</text>
+
+  <rect x="595" y="600" width="10" height="75" class="activation"/>
+  <rect x="1005" y="615" width="10" height="50" class="activation"/>
+
+  <path d="M600,615 L1005,615" class="arrow"/>
+  <text x="802" y="610" text-anchor="middle" class="message-bold">TransportRequest::Http { method, uri, headers, body }</text>
+
+  <path d="M1010,630 L1145,630" class="arrow-http"/>
+  <text x="1077" y="625" text-anchor="middle" class="message">HTTP GET/POST</text>
+
+  <path d="M1145,655 L1015,655" class="arrow-http-return"/>
+  <text x="1080" y="670" text-anchor="middle" class="message">HTTP Response</text>
+
+  <path d="M1005,670 L605,670" class="arrow-return"/>
+  <text x="805" y="685" text-anchor="middle" class="message">TransportResult { status, headers, body }</text>
+
+  <!-- Phase 5: Response Mapping (preview) -->
+  <rect x="15" y="690" width="1185" height="110" class="phase-box" opacity="0.3"/>
+  <text x="30" y="710" class="phase-label">5. Response Mapping (see Phase 4 diagram)</text>
+
+  <rect x="460" y="730" width="10" height="60" class="activation"/>
+  <rect x="875" y="745" width="10" height="35" class="activation"/>
+
+  <path d="M465,745 L875,745" class="arrow"/>
+  <text x="670" y="740" text-anchor="middle" class="message-bold">connector.selection.apply_with_vars(response_json, inputs)</text>
+
+  <path d="M875,775 L470,775" class="arrow-return"/>
+  <text x="672" y="790" text-anchor="middle" class="message">Mapped GraphQL data + errors</text>
+
+  <!-- Final response -->
+  <rect x="195" y="815" width="10" height="40" class="activation"/>
+  <rect x="70" y="835" width="10" height="30" class="activation"/>
+
+  <path d="M465,820 L200,820" class="arrow-return"/>
+  <text x="332" y="815" text-anchor="middle" class="message">FetchResult { data, errors }</text>
+
+  <path d="M200,845 L80,845" class="arrow-return"/>
+  <text x="140" y="840" text-anchor="middle" class="message-bold">GraphQL Response</text>
+
+  <!-- Legend -->
+  <rect x="15" y="870" width="600" height="70" fill="none" stroke="#c77dff" rx="4"/>
+  <text x="25" y="890" class="note-text">Files: plugins/connectors/request_service.rs, make_requests.rs, handle_responses.rs</text>
+  <text x="25" y="905" class="note-text">Key Functions: make_requests(), make_uri(), apply_with_vars()</text>
+  <text x="25" y="920" class="note-text">Variable namespaces: $args, $context, $env, $config, $this (entity), $status (response only)</text>
+  <line x1="630" y1="885" x2="660" y2="885" class="arrow-http" style="marker-end: none"/>
+  <text x="670" y="890" class="note-text">= External HTTP call (red)</text>
+</svg>

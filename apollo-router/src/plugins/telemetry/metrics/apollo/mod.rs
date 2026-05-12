@@ -1,4 +1,5 @@
 //! Apollo metrics
+use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -6,6 +7,7 @@ use std::time::Duration;
 use opentelemetry::KeyValue;
 use opentelemetry_otlp::MetricExporter;
 use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_otlp::WithHttpConfig;
 use opentelemetry_otlp::WithTonicConfig;
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::metrics::Aggregation;
@@ -129,63 +131,65 @@ impl Config {
         batch_config: &OtlpMetricsBatchProcessorConfiguration,
     ) -> Result<(), BoxError> {
         tracing::info!("configuring Apollo OTLP metrics: {}", batch_config);
-        let mut metadata = MetadataMap::new();
-        metadata.insert("apollo.api.key", key.parse()?);
-        let exporter = match otlp_protocol {
-            Protocol::Grpc => MetricExporter::builder()
-                .with_tonic()
-                .with_tls_config(ClientTlsConfig::new().with_native_roots())
-                .with_endpoint(endpoint.as_str())
-                .with_timeout(batch_config.max_export_timeout)
-                .with_metadata(metadata.clone())
-                .with_compression(opentelemetry_otlp::Compression::Gzip)
-                .with_temporality(Temporality::Delta)
-                .build()?,
-            // While Apollo doesn't use the HTTP protocol, we support it here for
-            // use in tests to enable WireMock.
+
+        let (exporter, realtime_exporter) = match otlp_protocol {
+            Protocol::Grpc => {
+                let mut metadata = MetadataMap::new();
+                metadata.insert("apollo.api.key", key.parse()?);
+
+                let exporter = MetricExporter::builder()
+                    .with_tonic()
+                    .with_tls_config(ClientTlsConfig::new().with_native_roots())
+                    .with_endpoint(endpoint.as_str())
+                    .with_timeout(batch_config.max_export_timeout)
+                    .with_metadata(metadata.clone())
+                    .with_compression(opentelemetry_otlp::Compression::Gzip)
+                    .with_temporality(Temporality::Delta)
+                    .build()?;
+
+                // MetricExporter builder does not implement Clone, so we need to create a new builder for the realtime exporter
+                let realtime_exporter = MetricExporter::builder()
+                    .with_tonic()
+                    .with_tls_config(ClientTlsConfig::new().with_native_roots())
+                    .with_endpoint(endpoint.as_str())
+                    .with_timeout(batch_config.max_export_timeout)
+                    .with_metadata(metadata.clone())
+                    .with_compression(opentelemetry_otlp::Compression::Gzip)
+                    .with_temporality(Temporality::Delta)
+                    .build()?;
+                (exporter, realtime_exporter)
+            }
             Protocol::Http => {
-                let maybe_endpoint = process_endpoint(
+                let endpoint_str = process_endpoint(
                     &Some(endpoint.to_string()),
                     &TelemetryDataKind::Metrics,
                     &Protocol::Http,
-                )?;
-                let mut builder = MetricExporter::builder()
+                )?
+                .ok_or("A valid HTTP OTLP endpoint is required when using the HTTP protocol")?;
+                let headers = HashMap::from([("x-api-key".to_string(), key.to_string())]);
+
+                let exporter = MetricExporter::builder()
                     .with_http()
                     .with_timeout(batch_config.max_export_timeout)
-                    .with_temporality(Temporality::Delta);
-                if let Some(endpoint) = maybe_endpoint {
-                    builder = builder.with_endpoint(endpoint);
-                }
-                builder.build()?
-            }
-        };
-        // MetricExporter builder does not implement Clone, so we need to create a new builder for the realtime exporter
-        let realtime_exporter = match otlp_protocol {
-            Protocol::Grpc => MetricExporter::builder()
-                .with_tonic()
-                .with_tls_config(ClientTlsConfig::new().with_native_roots())
-                .with_endpoint(endpoint.as_str())
-                .with_timeout(batch_config.max_export_timeout)
-                .with_metadata(metadata.clone())
-                .with_compression(opentelemetry_otlp::Compression::Gzip)
-                .with_temporality(Temporality::Delta)
-                .build()?,
-            Protocol::Http => {
-                let maybe_endpoint = process_endpoint(
-                    &Some(endpoint.to_string()),
-                    &TelemetryDataKind::Metrics,
-                    &Protocol::Http,
-                )?;
-                let mut builder = MetricExporter::builder()
+                    .with_temporality(Temporality::Delta)
+                    .with_compression(opentelemetry_otlp::Compression::Gzip)
+                    .with_headers(headers.clone())
+                    .with_endpoint(endpoint_str.clone())
+                    .build()?;
+
+                // MetricExporter builder does not implement Clone, so we need to create a new builder for the realtime exporter
+                let realtime_exporter = MetricExporter::builder()
                     .with_http()
                     .with_timeout(batch_config.max_export_timeout)
-                    .with_temporality(Temporality::Delta);
-                if let Some(endpoint) = maybe_endpoint {
-                    builder = builder.with_endpoint(endpoint);
-                }
-                builder.build()?
+                    .with_temporality(Temporality::Delta)
+                    .with_compression(opentelemetry_otlp::Compression::Gzip)
+                    .with_headers(headers)
+                    .with_endpoint(endpoint_str)
+                    .build()?;
+                (exporter, realtime_exporter)
             }
         };
+
         // Wrap with retry, then overflow detection, then error prefixing
         let named_exporter = NamedMetricExporter::new(
             OverflowMetricExporter::new_push(RetryMetricExporter::new(exporter)),
@@ -300,9 +304,12 @@ impl Config {
 #[cfg(test)]
 mod test {
     use std::future::Future;
+    use std::sync::Arc;
     use std::time::Duration;
 
+    use once_cell::sync::Lazy;
     use serde_json::Value;
+    use tokio::sync::Mutex;
     use tokio_stream::StreamExt;
     use tokio_stream::wrappers::ReceiverStream;
     use tower::ServiceExt;
@@ -324,8 +331,30 @@ mod test {
     use crate::query_planner::OperationKind;
     use crate::services::SupergraphRequest;
 
+    // Serializes every test in this module. `Telemetry::new` populates
+    // `create_builtin_instruments` from the global meter provider, and
+    // `Telemetry::activate` installs global tracer and meter providers via
+    // `opentelemetry::global::set_tracer_provider` and
+    // `meter_provider_internal().set(...)`. Running these tests in parallel
+    // allows one test's global providers to clobber another's, causing the
+    // target test's `apollo_metrics_sender` channel to receive zero or partial
+    // stats reports and failing the snapshot assertions. This is the same
+    // pattern `apollo_otel_traces.rs` and `apollo_reports.rs` use at the
+    // integration-test layer, for the same reason.
+    //
+    // The dragons here are ancient and very evil. Do not attempt to take
+    // their treasure.
+    //
+    // Under `cargo nextest`, this set of tests is also serialized by the
+    // `serial-apollo-metrics-unit` test-group in `.config/nextest.toml`.
+    // The in-source mutex below is kept so that contributors running plain
+    // `cargo test -p apollo-router` (which does not honour nextest config)
+    // still get the serialization they need.
+    static TEST: Lazy<Arc<Mutex<()>>> = Lazy::new(Default::default);
+
     #[tokio::test(flavor = "multi_thread")]
     async fn apollo_metrics_disabled() -> Result<(), BoxError> {
+        let _guard = TEST.lock().await;
         let config = r#"
             telemetry:
               apollo:
@@ -342,6 +371,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn apollo_metrics_enabled() -> Result<(), BoxError> {
+        let _guard = TEST.lock().await;
         let plugin = create_default_telemetry_plugin().await?;
         assert!(matches!(plugin.apollo_metrics_sender, Sender::Apollo(_)));
         Ok(())
@@ -349,6 +379,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn apollo_metrics_single_operation() -> Result<(), BoxError> {
+        let _guard = TEST.lock().await;
         let query = "query {topProducts{name}}";
         let results = get_metrics_for_request(query, None, None, false, None).await?;
         let mut settings = insta::Settings::clone_current();
@@ -362,6 +393,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn apollo_metrics_for_subscription() -> Result<(), BoxError> {
+        let _guard = TEST.lock().await;
         let query = "subscription {userWasCreated{name}}";
         let context = Context::new();
         let _ = context
@@ -379,6 +411,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn apollo_metrics_for_subscription_error() -> Result<(), BoxError> {
+        let _guard = TEST.lock().await;
         let query = "subscription{reviewAdded{body}}";
         let context = Context::new();
         let _ = context
@@ -396,6 +429,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn apollo_metrics_multiple_operations() -> Result<(), BoxError> {
+        let _guard = TEST.lock().await;
         let query = "query {topProducts{name}} query {topProducts{name}}";
         let results = get_metrics_for_request(query, None, None, false, None).await?;
         let mut settings = insta::Settings::clone_current();
@@ -409,6 +443,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn apollo_metrics_parse_failure() -> Result<(), BoxError> {
+        let _guard = TEST.lock().await;
         let query = "garbage";
         let results = get_metrics_for_request(query, None, None, false, None).await?;
         let mut settings = insta::Settings::clone_current();
@@ -422,6 +457,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn apollo_metrics_unknown_operation() -> Result<(), BoxError> {
+        let _guard = TEST.lock().await;
         let query = "query {topProducts{name}}";
         let results = get_metrics_for_request(query, Some("UNKNOWN"), None, false, None).await?;
         let mut settings = insta::Settings::clone_current();
@@ -433,6 +469,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn apollo_metrics_validation_failure() -> Result<(), BoxError> {
+        let _guard = TEST.lock().await;
         let query = "query {topProducts(minStarRating: 4.7){name}}";
         let results = get_metrics_for_request(query, None, None, false, None).await?;
         let mut settings = insta::Settings::clone_current();
@@ -447,6 +484,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn apollo_metrics_exclude() -> Result<(), BoxError> {
+        let _guard = TEST.lock().await;
         let query = "query {topProducts{name}}";
         let context = Context::new();
         context.insert(STUDIO_EXCLUDE, true)?;
@@ -463,6 +501,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn apollo_metrics_features_explicitly_enabled() -> Result<(), BoxError> {
+        let _guard = TEST.lock().await;
         let query = "query {topProducts{name}}";
         let plugin = create_telemetry_plugin(include_str!(
             "../../testdata/full_config_all_features_enabled.router.yaml"
@@ -494,6 +533,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn apollo_metrics_features_explicitly_disabled() -> Result<(), BoxError> {
+        let _guard = TEST.lock().await;
         let query = "query {topProducts{name}}";
         let plugin = create_telemetry_plugin(include_str!(
             "../../testdata/full_config_all_features_explicitly_disabled.router.yaml"
@@ -512,6 +552,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn apollo_metrics_features_disabled_when_defaulted() -> Result<(), BoxError> {
+        let _guard = TEST.lock().await;
         let query = "query {topProducts{name}}";
         let plugin = create_telemetry_plugin(include_str!(
             "../../testdata/full_config_all_features_defaults.router.yaml"
@@ -531,6 +572,7 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn apollo_metrics_distributed_apq_cache_feature_enabled_with_partial_defaults()
     -> Result<(), BoxError> {
+        let _guard = TEST.lock().await;
         let query = "query {topProducts{name}}";
         let plugin = create_telemetry_plugin(include_str!(
             "../../testdata/full_config_apq_enabled_partial_defaults.router.yaml"
@@ -550,6 +592,7 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn apollo_metrics_distributed_apq_cache_feature_disabled_with_partial_defaults()
     -> Result<(), BoxError> {
+        let _guard = TEST.lock().await;
         let query = "query {topProducts{name}}";
         let plugin = create_telemetry_plugin(include_str!(
             "../../testdata/full_config_apq_disabled_partial_defaults.router.yaml"

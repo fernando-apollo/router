@@ -1,0 +1,214 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1250 1050">
+  <defs>
+    <style>
+      .title { font: bold 20px sans-serif; fill: #1a1a2e; }
+      .subtitle { font: italic 14px sans-serif; fill: #666; }
+      .actor { font: bold 11px sans-serif; fill: #fff; }
+      .actor-box { fill: #d62828; stroke: #9d0208; stroke-width: 2; rx: 6; }
+      .lifeline { stroke: #f4a261; stroke-width: 1.5; stroke-dasharray: 6,4; }
+      .message { font: 11px sans-serif; fill: #1a1a2e; }
+      .message-bold { font: bold 11px sans-serif; fill: #1a1a2e; }
+      .arrow { stroke: #d62828; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+      .arrow-return { stroke: #f4a261; stroke-width: 1.5; stroke-dasharray: 5,3; fill: none; marker-end: url(#arrowhead-light); }
+      .arrow-loop { stroke: #d62828; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+      .activation { fill: #fcd5ce; stroke: #f4a261; stroke-width: 1; }
+      .note { fill: #fff0eb; stroke: #f4a261; stroke-width: 1; rx: 4; }
+      .note-text { font: 10px sans-serif; fill: #9d0208; }
+      .phase-label { font: bold 13px sans-serif; fill: #9d0208; }
+      .phase-box { fill: #fff0eb; stroke: #f4a261; stroke-width: 1; rx: 4; }
+      .data-box { fill: #fff; stroke: #d62828; stroke-width: 1.5; rx: 4; }
+      .data-text { font: 10px monospace; fill: #9d0208; }
+      .code-box { fill: #2d2d2d; stroke: #444; stroke-width: 1; rx: 4; }
+      .code-text { font: 10px monospace; fill: #e0e0e0; }
+      .alt-box { fill: #ffe8d6; stroke: #dda15e; stroke-width: 1.5; rx: 4; stroke-dasharray: 4,2; }
+      .alt-label { font: bold 10px sans-serif; fill: #bc6c25; }
+      .success { fill: #40916c; }
+      .error { fill: #d62828; }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#d62828"/>
+    </marker>
+    <marker id="arrowhead-light" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#f4a261"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="625" y="35" text-anchor="middle" class="title">Phase 4: Response Handling &amp; Selection Mapping</text>
+  <text x="625" y="55" text-anchor="middle" class="subtitle">Transforming HTTP Response to GraphQL Data</text>
+
+  <!-- Actors -->
+  <g id="actors">
+    <!-- handle_responses -->
+    <rect x="40" y="75" width="120" height="40" class="actor-box"/>
+    <text x="100" y="100" text-anchor="middle" class="actor">handle_responses</text>
+    <line x1="100" y1="115" x2="100" y2="1000" class="lifeline"/>
+
+    <!-- process_response -->
+    <rect x="190" y="75" width="120" height="40" class="actor-box"/>
+    <text x="250" y="100" text-anchor="middle" class="actor">process_response</text>
+    <line x1="250" y1="115" x2="250" y2="1000" class="lifeline"/>
+
+    <!-- deserialize_response -->
+    <rect x="340" y="75" width="130" height="40" class="actor-box"/>
+    <text x="405" y="100" text-anchor="middle" class="actor">deserialize_response</text>
+    <line x1="405" y1="115" x2="405" y2="1000" class="lifeline"/>
+
+    <!-- handle_raw_response -->
+    <rect x="500" y="75" width="130" height="40" class="actor-box"/>
+    <text x="565" y="100" text-anchor="middle" class="actor">handle_raw_response</text>
+    <line x1="565" y1="115" x2="565" y2="1000" class="lifeline"/>
+
+    <!-- JSONSelection -->
+    <rect x="660" y="75" width="100" height="40" class="actor-box"/>
+    <text x="710" y="100" text-anchor="middle" class="actor">JSONSelection</text>
+    <line x1="710" y1="115" x2="710" y2="1000" class="lifeline"/>
+
+    <!-- apply_to_path -->
+    <rect x="790" y="75" width="100" height="40" class="actor-box"/>
+    <text x="840" y="100" text-anchor="middle" class="actor">apply_to_path</text>
+    <line x1="840" y1="115" x2="840" y2="1000" class="lifeline"/>
+
+    <!-- error_settings -->
+    <rect x="920" y="75" width="100" height="40" class="actor-box"/>
+    <text x="970" y="100" text-anchor="middle" class="actor">error_settings</text>
+    <line x1="970" y1="115" x2="970" y2="1000" class="lifeline"/>
+
+    <!-- aggregate_responses -->
+    <rect x="1050" y="75" width="130" height="40" class="actor-box"/>
+    <text x="1115" y="100" text-anchor="middle" class="actor">aggregate_responses</text>
+    <line x1="1115" y1="115" x2="1115" y2="1000" class="lifeline"/>
+  </g>
+
+  <!-- Phase 1: Response Deserialization -->
+  <rect x="15" y="130" width="1220" height="130" class="phase-box" opacity="0.3"/>
+  <text x="30" y="150" class="phase-label">1. Response Deserialization</text>
+
+  <rect x="95" y="165" width="10" height="85" class="activation"/>
+  <rect x="245" y="175" width="10" height="65" class="activation"/>
+  <rect x="400" y="190" width="10" height="40" class="activation"/>
+
+  <path d="M100,170 L245,170" class="arrow"/>
+  <text x="172" y="165" text-anchor="middle" class="message">process_response(result, key, connector)</text>
+
+  <path d="M250,185 L400,185" class="arrow"/>
+  <text x="325" y="180" text-anchor="middle" class="message">deserialize_response(body, headers)</text>
+
+  <!-- Note: Content-Type handling -->
+  <rect x="420" y="165" width="200" height="60" class="note"/>
+  <text x="430" y="180" class="note-text">Content-Type dispatch:</text>
+  <text x="430" y="193" class="note-text">• application/json → parse JSON</text>
+  <text x="430" y="206" class="note-text">• text/plain → string value</text>
+  <text x="430" y="219" class="note-text">• unknown → null</text>
+
+  <path d="M400,225 L255,225" class="arrow-return"/>
+  <text x="327" y="240" text-anchor="middle" class="message">serde_json::Value</text>
+
+  <!-- Phase 2: Success Determination -->
+  <rect x="15" y="265" width="1220" height="110" class="phase-box" opacity="0.3"/>
+  <text x="30" y="285" class="phase-label">2. Success/Error Determination</text>
+
+  <rect x="245" y="300" width="10" height="65" class="activation"/>
+  <rect x="560" y="315" width="10" height="40" class="activation"/>
+
+  <path d="M250,310 L560,310" class="arrow"/>
+  <text x="405" y="305" text-anchor="middle" class="message">handle_raw_response(data, parts, key, connector)</text>
+
+  <!-- Alt box: Success check -->
+  <rect x="580" y="295" width="350" height="70" class="alt-box"/>
+  <text x="590" y="310" class="alt-label">[alt] Success Check</text>
+  <text x="600" y="330" class="note-text">If connector.error_settings.connect_is_success:</text>
+  <text x="620" y="345" class="note-text">→ is_success_selection.apply_with_vars(data, inputs)</text>
+  <text x="600" y="358" class="note-text">Else: parts.status.is_success()</text>
+
+  <!-- Phase 3a: Success Path - Response Mapping -->
+  <rect x="15" y="380" width="1220" height="280" class="phase-box" opacity="0.3"/>
+  <text x="30" y="400" class="phase-label">3a. Success Path: Response Mapping</text>
+  <rect x="20" y="395" width="60" height="18" rx="3" class="success"/>
+  <text x="50" y="407" text-anchor="middle" style="font: bold 10px sans-serif; fill: white;">SUCCESS</text>
+
+  <rect x="560" y="420" width="10" height="230" class="activation"/>
+  <rect x="705" y="435" width="10" height="200" class="activation"/>
+  <rect x="835" y="455" width="10" height="165" class="activation"/>
+
+  <path d="M565,430 L705,430" class="arrow"/>
+  <text x="635" y="425" text-anchor="middle" class="message-bold">selection.apply_with_vars(data, inputs)</text>
+
+  <path d="M710,450 L835,450" class="arrow"/>
+  <text x="772" y="445" text-anchor="middle" class="message">apply_to_path(path, data)</text>
+
+  <!-- Code box: Selection traversal -->
+  <rect x="855" y="435" width="280" height="140" class="code-box"/>
+  <text x="865" y="452" class="code-text">PathSelection traversal:</text>
+  <text x="865" y="468" class="code-text">Key(name, tail) →</text>
+  <text x="875" y="483" class="code-text">data[name], apply tail</text>
+  <text x="865" y="500" class="code-text">Var($args.x, tail) →</text>
+  <text x="875" y="515" class="code-text">inputs.args.x, apply tail</text>
+  <text x="865" y="532" class="code-text">Method(->func(), tail) →</text>
+  <text x="875" y="547" class="code-text">exec method, apply tail</text>
+  <text x="865" y="564" class="code-text">Selection({...}) →</text>
+  <text x="875" y="579" class="code-text">recursive apply</text>
+
+  <!-- Data box: Example mapping -->
+  <rect x="580" y="475" width="115" height="110" class="data-box"/>
+  <text x="590" y="490" class="data-text">Selection:</text>
+  <text x="590" y="505" class="data-text">  id</text>
+  <text x="590" y="520" class="data-text">  name</text>
+  <text x="590" y="535" class="data-text">  email: $.user.email</text>
+  <text x="590" y="565" class="data-text">...User (expanded)</text>
+
+  <path d="M835,610 L715,610" class="arrow-return"/>
+  <text x="775" y="605" text-anchor="middle" class="message">(Value, Vec&lt;Problem&gt;)</text>
+
+  <path d="M705,635 L570,635" class="arrow-return"/>
+  <text x="637" y="650" text-anchor="middle" class="message">MappedResponse::Data { key, data, problems }</text>
+
+  <!-- Phase 3b: Error Path -->
+  <rect x="15" y="665" width="1220" height="145" class="phase-box" opacity="0.3"/>
+  <text x="30" y="685" class="phase-label">3b. Error Path: Error Extraction</text>
+  <rect x="20" y="700" width="50" height="18" rx="3" class="error"/>
+  <text x="45" y="712" text-anchor="middle" style="font: bold 10px sans-serif; fill: white;">ERROR</text>
+
+  <rect x="560" y="720" width="10" height="80" class="activation"/>
+  <rect x="705" y="735" width="10" height="25" class="activation"/>
+  <rect x="965" y="765" width="10" height="25" class="activation"/>
+
+  <path d="M565,730 L705,730" class="arrow"/>
+  <text x="635" y="725" text-anchor="middle" class="message">error_message.apply_with_vars(data)</text>
+
+  <path d="M705,755 L570,755" class="arrow-return"/>
+  <text x="637" y="750" text-anchor="middle" class="message">error message string</text>
+
+  <path d="M565,770 L965,770" class="arrow"/>
+  <text x="765" y="765" text-anchor="middle" class="message">error_extensions.apply_with_vars(data) + source_extensions</text>
+
+  <path d="M965,785 L570,785" class="arrow-return"/>
+  <text x="767" y="800" text-anchor="middle" class="message">MappedResponse::Error { error, key, problems }</text>
+
+  <!-- Phase 4: Response Aggregation -->
+  <rect x="15" y="815" width="1220" height="130" class="phase-box" opacity="0.3"/>
+  <text x="30" y="835" class="phase-label">4. Response Aggregation</text>
+
+  <rect x="95" y="855" width="10" height="80" class="activation"/>
+  <rect x="1110" y="870" width="10" height="55" class="activation"/>
+
+  <path d="M100,865 L1110,865" class="arrow"/>
+  <text x="605" y="860" text-anchor="middle" class="message-bold">aggregate_responses(Vec&lt;MappedResponse&gt;)</text>
+
+  <!-- Note: Aggregation rules -->
+  <rect x="940" y="880" width="180" height="55" class="note"/>
+  <text x="950" y="895" class="note-text">Merge by ResponseKey:</text>
+  <text x="950" y="910" class="note-text">• RootField → direct merge</text>
+  <text x="950" y="925" class="note-text">• Entity[idx] → entities array</text>
+
+  <path d="M1110,920 L105,920" class="arrow-return"/>
+  <text x="607" y="935" text-anchor="middle" class="message-bold">GraphQL Response { data, errors }</text>
+
+  <!-- Legend -->
+  <rect x="15" y="955" width="700" height="85" fill="none" stroke="#f4a261" rx="4"/>
+  <text x="25" y="975" class="note-text">Files: handle_responses.rs, json_selection/apply_to.rs, aggregate.rs</text>
+  <text x="25" y="990" class="note-text">Key: Selection expansion (from @mapping) happens BEFORE this phase, at schema load time</text>
+  <text x="25" y="1010" class="note-text">Variable namespaces available: $args, $context, $env, $config, $this, $status (HTTP status code)</text>
+  <text x="25" y="1025" class="note-text">Methods (->): Only allowed in @connect selection, NOT in @mapping definitions (security)</text>
+</svg>

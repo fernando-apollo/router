@@ -5,7 +5,8 @@ use std::str::FromStr;
 use apollo_compiler::collections::IndexSet;
 use itertools::Itertools;
 use nom::IResult;
-use nom::Slice;
+use nom::Input;
+use nom::Parser;
 use nom::branch::alt;
 use nom::bytes::complete::take_while;
 use nom::character::complete::char;
@@ -20,7 +21,6 @@ use nom::multi::many0;
 use nom::sequence::pair;
 use nom::sequence::preceded;
 use nom::sequence::terminated;
-use nom::sequence::tuple;
 use serde_json_bytes::Value as JSON;
 
 use super::helpers::spaces_or_comments;
@@ -187,14 +187,14 @@ impl JSONSelection {
     pub fn named(sub: SubSelection) -> Self {
         Self {
             inner: TopLevelSelection::Named(sub),
-            spec: Self::default_connect_spec(),
+            spec: ConnectSpec::latest(),
         }
     }
 
     pub fn path(path: PathSelection) -> Self {
         Self {
             inner: TopLevelSelection::Path(path),
-            spec: Self::default_connect_spec(),
+            spec: ConnectSpec::latest(),
         }
     }
 
@@ -212,7 +212,7 @@ impl JSONSelection {
     pub fn empty() -> Self {
         Self {
             inner: TopLevelSelection::Named(SubSelection::default()),
-            spec: Self::default_connect_spec(),
+            spec: ConnectSpec::latest(),
         }
     }
 
@@ -229,11 +229,7 @@ impl JSONSelection {
     // as the input type and a custom JSONSelectionParseError type as the error
     // type, rather than using Span or nom::error::Error directly.
     pub fn parse(input: &str) -> Result<Self, JSONSelectionParseError> {
-        JSONSelection::parse_with_spec(input, Self::default_connect_spec())
-    }
-
-    pub(super) fn default_connect_spec() -> ConnectSpec {
-        ConnectSpec::V0_2
+        JSONSelection::parse_with_spec(input, ConnectSpec::latest())
     }
 
     pub fn parse_with_spec(
@@ -261,7 +257,7 @@ impl JSONSelection {
                     let (error_offset, error_fragment) =
                         if let Some((_, first_error_offset)) = remainder.extra.errors.first() {
                             let error_span =
-                                new_span_with_spec(input, spec).slice(*first_error_offset..);
+                                new_span_with_spec(input, spec).take_from(*first_error_offset);
                             (
                                 error_span.location_offset(),
                                 error_span.fragment().to_string(),
@@ -340,7 +336,8 @@ impl JSONSelection {
                 // input, which is caught by the first all_consuming above.
                 spaces_or_comments,
             )),
-        ))(input)
+        ))
+        .parse(input)
         {
             Ok((remainder, selection)) => {
                 if remainder.fragment().is_empty() {
@@ -407,7 +404,8 @@ impl JSONSelection {
             // the end of the string is inconsequential, in order to satisfy the
             // all_consuming combinator above.
             spaces_or_comments,
-        ))(input)
+        ))
+        .parse(input)
         {
             Ok((remainder, selection)) => {
                 if remainder.fragment().is_empty() {
@@ -588,19 +586,21 @@ impl NamedSelection {
             Self::parse_path,
             Self::parse_field,
             Self::parse_group,
-        ))(input)
+        ))
+        .parse(input)
     }
 
     fn parse_field(input: Span) -> ParseResult<Self> {
-        tuple((
+        (
             opt(Alias::parse),
             Key::parse,
             spaces_or_comments,
             opt(SubSelection::parse),
-        ))(input)
-        .map(|(remainder, (alias, name, _, selection))| {
-            (remainder, Self::field(alias, name, selection))
-        })
+        )
+            .parse(input)
+            .map(|(remainder, (alias, name, _, selection))| {
+                (remainder, Self::field(alias, name, selection))
+            })
     }
 
     // Parses either NamedPathSelection or PathWithSubSelection.
@@ -653,18 +653,20 @@ impl NamedSelection {
     }
 
     fn parse_group(input: Span) -> ParseResult<Self> {
-        tuple((Alias::parse, SubSelection::parse))(input).map(|(input, (alias, group))| {
-            let group_range = group.range();
-            (
-                input,
-                NamedSelection {
-                    prefix: NamingPrefix::Alias(alias),
-                    path: PathSelection {
-                        path: WithRange::new(PathList::Selection(group), group_range),
+        (Alias::parse, SubSelection::parse)
+            .parse(input)
+            .map(|(input, (alias, group))| {
+                let group_range = group.range();
+                (
+                    input,
+                    NamedSelection {
+                        prefix: NamingPrefix::Alias(alias),
+                        path: PathSelection {
+                            path: WithRange::new(PathList::Selection(group), group_range),
+                        },
                     },
-                },
-            )
-        })
+                )
+            })
     }
 
     /// Parse a type name (identifier starting with uppercase letter) for ...TypeName spread syntax.
@@ -672,10 +674,10 @@ impl NamedSelection {
     fn parse_spread_type_name(input: Span) -> ParseResult<WithRange<String>> {
         // Parse identifier that starts with uppercase ASCII letter
         // Following characters must be ASCII letter, digit, or underscore (GraphQL Name spec)
-        let (remainder, name) = recognize(tuple((
+        let (remainder, name) = recognize((
             satisfy(|c: char| c.is_ascii_uppercase()),
             take_while(|c: char| c.is_ascii_alphanumeric() || c == '_'),
-        )))(input)?;
+        )).parse(input)?;
 
         let name_str = name.fragment().to_string();
         let range = Some(name.location_offset()..name.location_offset() + name_str.len());
@@ -685,7 +687,7 @@ impl NamedSelection {
     // NamedSelection ::= (Alias | "...")? PathSelection | Alias SubSelection
     // V0_3 version: Spread syntax (...) is NOT supported. Preserved for backwards compatibility.
     fn parse_v0_3(input: Span) -> ParseResult<Self> {
-        let (after_alias, alias) = opt(Alias::parse)(input.clone())?;
+        let (after_alias, alias) = opt(Alias::parse).parse(input.clone())?;
 
         if let Some(alias) = alias {
             if let Ok((remainder, sub)) = SubSelection::parse(after_alias.clone()) {
@@ -721,54 +723,55 @@ impl NamedSelection {
                 )
             })
         } else {
-            tuple((
+            (
                 spaces_or_comments,
                 opt(ranged_span("...")),
                 PathSelection::parse,
-            ))(input.clone())
-            .map(|(mut remainder, (_spaces, spread, path))| {
-                let prefix = if let Some(spread) = spread {
-                    // V0_3 does NOT support spread syntax - always add error
-                    remainder.extra.errors.push((
+            )
+                .parse(input.clone())
+                .map(|(mut remainder, (_spaces, spread, path))| {
+                    let prefix = if let Some(spread) = spread {
+                        // V0_3 does NOT support spread syntax - always add error
+                        remainder.extra.errors.push((
                         "Spread syntax (...) is not supported in connect/v0.3 (use connect/v0.4)"
                             .to_string(),
                         input.location_offset(),
                     ));
-                    // An explicit ... spread token was used, so we record
-                    // NamingPrefix::Spread(Some(_)). If the path produces
-                    // something other than an object or null, we will catch
-                    // that in apply_to_path and compute_output_shape (not a
-                    // parsing concern).
-                    NamingPrefix::Spread(spread.range())
-                } else if path.is_anonymous() && path.has_subselection() {
-                    // If there is no Alias or ... and the path is anonymous and
-                    // it has a trailing SubSelection, then it should be spread
-                    // into the larger SubSelection. This is an older syntax
-                    // (PathWithSubSelection) that provided some of the benefits
-                    // of ..., before ... was supported (in connect/v0.3). It's
-                    // important the path is anonymous, since regular field
-                    // selections like `user { id name }` meet all the criteria
-                    // above but should not be spread because they do produce an
-                    // output key.
-                    NamingPrefix::Spread(None)
-                } else {
-                    // Otherwise, the path has no prefix, so it either produces
-                    // a single Key according to path.get_single_key(), or this
-                    // is an anonymous NamedSelection, which are only allowed at
-                    // the top level. However, since we don't know about other
-                    // NamedSelections here, these rules have to be enforced at
-                    // a higher level.
-                    NamingPrefix::None
-                };
-                (remainder, Self { prefix, path })
-            })
+                        // An explicit ... spread token was used, so we record
+                        // NamingPrefix::Spread(Some(_)). If the path produces
+                        // something other than an object or null, we will catch
+                        // that in apply_to_path and compute_output_shape (not a
+                        // parsing concern).
+                        NamingPrefix::Spread(spread.range())
+                    } else if path.is_anonymous() && path.has_subselection() {
+                        // If there is no Alias or ... and the path is anonymous and
+                        // it has a trailing SubSelection, then it should be spread
+                        // into the larger SubSelection. This is an older syntax
+                        // (PathWithSubSelection) that provided some of the benefits
+                        // of ..., before ... was supported (in connect/v0.3). It's
+                        // important the path is anonymous, since regular field
+                        // selections like `user { id name }` meet all the criteria
+                        // above but should not be spread because they do produce an
+                        // output key.
+                        NamingPrefix::Spread(None)
+                    } else {
+                        // Otherwise, the path has no prefix, so it either produces
+                        // a single Key according to path.get_single_key(), or this
+                        // is an anonymous NamedSelection, which are only allowed at
+                        // the top level. However, since we don't know about other
+                        // NamedSelections here, these rules have to be enforced at
+                        // a higher level.
+                        NamingPrefix::None
+                    };
+                    (remainder, Self { prefix, path })
+                })
         }
     }
 
     // NamedSelection ::= (Alias | "...")? PathSelection | Alias SubSelection
     // This version enables spread syntax (...) for abstract types support.
     fn parse_v0_4(input: Span) -> ParseResult<Self> {
-        let (after_alias, alias) = opt(Alias::parse)(input.clone())?;
+        let (after_alias, alias) = opt(Alias::parse).parse(input.clone())?;
 
         if let Some(alias) = alias {
             if let Ok((remainder, sub)) = SubSelection::parse(after_alias.clone()) {
@@ -804,37 +807,38 @@ impl NamedSelection {
                 )
             })
         } else {
-            tuple((
+            (
                 spaces_or_comments,
                 opt(ranged_span("...")),
                 PathSelection::parse,
-            ))(input.clone())
-            .map(|(remainder, (_spaces, spread, path))| {
-                let prefix = if let Some(spread) = spread {
-                    // Spread syntax is fully supported in V0_4
-                    NamingPrefix::Spread(spread.range())
-                } else if path.is_anonymous() && path.has_subselection() {
-                    // If there is no Alias or ... and the path is anonymous and
-                    // it has a trailing SubSelection, then it should be spread
-                    // into the larger SubSelection. This is an older syntax
-                    // (PathWithSubSelection) that provided some of the benefits
-                    // of ..., before ... was supported (in connect/v0.3). It's
-                    // important the path is anonymous, since regular field
-                    // selections like `user { id name }` meet all the criteria
-                    // above but should not be spread because they do produce an
-                    // output key.
-                    NamingPrefix::Spread(None)
-                } else {
-                    // Otherwise, the path has no prefix, so it either produces
-                    // a single Key according to path.get_single_key(), or this
-                    // is an anonymous NamedSelection, which are only allowed at
-                    // the top level. However, since we don't know about other
-                    // NamedSelections here, these rules have to be enforced at
-                    // a higher level.
-                    NamingPrefix::None
-                };
-                (remainder, Self { prefix, path })
-            })
+            )
+                .parse(input.clone())
+                .map(|(remainder, (_spaces, spread, path))| {
+                    let prefix = if let Some(spread) = spread {
+                        // Spread syntax is fully supported in V0_4
+                        NamingPrefix::Spread(spread.range())
+                    } else if path.is_anonymous() && path.has_subselection() {
+                        // If there is no Alias or ... and the path is anonymous and
+                        // it has a trailing SubSelection, then it should be spread
+                        // into the larger SubSelection. This is an older syntax
+                        // (PathWithSubSelection) that provided some of the benefits
+                        // of ..., before ... was supported (in connect/v0.3). It's
+                        // important the path is anonymous, since regular field
+                        // selections like `user { id name }` meet all the criteria
+                        // above but should not be spread because they do produce an
+                        // output key.
+                        NamingPrefix::Spread(None)
+                    } else {
+                        // Otherwise, the path has no prefix, so it either produces
+                        // a single Key according to path.get_single_key(), or this
+                        // is an anonymous NamedSelection, which are only allowed at
+                        // the top level. However, since we don't know about other
+                        // NamedSelections here, these rules have to be enforced at
+                        // a higher level.
+                        NamingPrefix::None
+                    };
+                    (remainder, Self { prefix, path })
+                })
         }
     }
 
@@ -847,7 +851,7 @@ impl NamedSelection {
     // from v0.4 to v0.5 to opt into this behavior. The uppercase convention for type names
     // distinguishes mapping references from lowercase path identifiers.
     fn parse_v0_5(input: Span) -> ParseResult<Self> {
-        let (after_alias, alias) = opt(Alias::parse)(input.clone())?;
+        let (after_alias, alias) = opt(Alias::parse).parse(input.clone())?;
 
         if let Some(alias) = alias {
             if let Ok((remainder, sub)) = SubSelection::parse(after_alias.clone()) {
@@ -877,7 +881,7 @@ impl NamedSelection {
             // This must be attempted before the generic spread parser
             if let Ok((after_spaces, _)) = spaces_or_comments(input.clone())
                 && let Ok((after_spread, spread_token)) =
-                    ranged_span("...")(after_spaces.clone())
+                    ranged_span("...").parse(after_spaces.clone())
                 && let Ok((remainder, type_name)) =
                     Self::parse_spread_type_name(after_spread.clone())
             {
@@ -909,11 +913,11 @@ impl NamedSelection {
             }
 
             // Fall through to regular spread/path parsing (same as V0_4)
-            tuple((
+            (
                 spaces_or_comments,
                 opt(ranged_span("...")),
                 PathSelection::parse,
-            ))(input.clone())
+            ).parse(input.clone())
             .map(|(remainder, (_spaces, spread, path))| {
                 let prefix = if let Some(spread) = spread {
                     // Spread syntax is fully supported in V0_5
@@ -1180,13 +1184,14 @@ impl PathList {
             // case needs to come before the $ (and $var) case, because $( looks
             // like the $ variable followed by a parse error in the variable
             // case, unless we add some complicated lookahead logic there.
-            match tuple((
+            match (
                 spaces_or_comments,
                 ranged_span("$("),
                 LitExpr::parse,
                 spaces_or_comments,
                 ranged_span(")"),
-            ))(input.clone())
+            )
+                .parse(input.clone())
             {
                 Ok((suffix, (_, dollar_open_paren, expr, close_paren, _))) => {
                     let (remainder, rest) = Self::parse_with_depth(suffix, depth + 1)?;
@@ -1206,7 +1211,7 @@ impl PathList {
             }
 
             if let Ok((suffix, (dollar, opt_var))) =
-                tuple((ranged_span("$"), opt(parse_identifier_no_space)))(input.clone())
+                (ranged_span("$"), opt(parse_identifier_no_space)).parse(input.clone())
             {
                 let dollar_range = dollar.range();
                 let (remainder, rest) = Self::parse_with_depth(suffix, depth + 1)?;
@@ -1236,7 +1241,7 @@ impl PathList {
                 };
             }
 
-            if let Ok((suffix, at)) = ranged_span("@")(input.clone()) {
+            if let Ok((suffix, at)) = ranged_span("@").parse(input.clone()) {
                 let (remainder, rest) = Self::parse_with_depth(suffix, depth + 1)?;
                 let full_range = merge_ranges(at.range(), rest.range());
                 return Ok((
@@ -1285,7 +1290,7 @@ impl PathList {
         if depth == 0 {
             // If the PathSelection does not start with a $var (or $ or @), a
             // key., or $(expr), it is not a valid PathSelection.
-            if tuple((ranged_span("."), Key::parse))(input.clone()).is_ok() {
+            if (ranged_span("."), Key::parse).parse(input.clone()).is_ok() {
                 // Since we previously allowed starting key paths with .key but
                 // now forbid that syntax (because it can be ambiguous), suggest
                 // the unambiguous $.key syntax instead.
@@ -1316,7 +1321,7 @@ impl PathList {
                 // The ? token was not introduced until connect/v0.3.
             }
             ConnectSpec::V0_3 | ConnectSpec::V0_4 | ConnectSpec::V0_5 => {
-                if let Ok((suffix, question)) = ranged_span("?")(input.clone()) {
+                if let Ok((suffix, question)) = ranged_span("?").parse(input.clone()) {
                     let (remainder, rest) = Self::parse_with_depth(suffix.clone(), depth + 1)?;
 
                     return match rest.as_ref() {
@@ -1354,7 +1359,7 @@ impl PathList {
         // be written as a subproperty of the $ variable, e.g. $.key, which is
         // equivalent to the old behavior, but parses unambiguously. In terms of
         // this code, that means we allow a .key only at depths > 0.
-        if let Ok((remainder, (dot, key))) = tuple((ranged_span("."), Key::parse))(input.clone()) {
+        if let Ok((remainder, (dot, key))) = (ranged_span("."), Key::parse).parse(input.clone()) {
             let (remainder, rest) = Self::parse_with_depth(remainder, depth + 1)?;
             let dot_key_range = merge_ranges(dot.range(), key.range());
             let full_range = merge_ranges(dot_key_range, rest.range());
@@ -1372,12 +1377,12 @@ impl PathList {
 
         // PathSelection can never start with a naked ->method (instead, use
         // $->method or @->method if you want to operate on the current value).
-        if let Ok((suffix, arrow)) = ranged_span("->")(input.clone()) {
+        if let Ok((suffix, arrow)) = ranged_span("->").parse(input.clone()) {
             // As soon as we see a -> token, we know what follows must be a
             // method name, so we can unconditionally return based on what
             // parse_identifier tells us. since MethodArgs::parse is optional,
             // the absence of args will never trigger the error case.
-            return match tuple((parse_identifier, opt(MethodArgs::parse)))(suffix) {
+            return match (parse_identifier, opt(MethodArgs::parse)).parse(suffix) {
                 Ok((suffix, (method, args_opt))) => {
                     let mut local_var_name = None;
 
@@ -1605,13 +1610,14 @@ impl Ranged for SubSelection {
 
 impl SubSelection {
     pub(crate) fn parse(input: Span) -> ParseResult<Self> {
-        match tuple((
+        match (
             spaces_or_comments,
             ranged_span("{"),
             Self::parse_naked,
             spaces_or_comments,
             ranged_span("}"),
-        ))(input)
+        )
+            .parse(input)
         {
             Ok((remainder, (_, open_brace, sub, _, close_brace))) => {
                 let range = merge_ranges(open_brace.range(), close_brace.range());
@@ -1628,7 +1634,7 @@ impl SubSelection {
     }
 
     fn parse_naked(input: Span) -> ParseResult<Self> {
-        match many0(NamedSelection::parse)(input.clone()) {
+        match many0(NamedSelection::parse).parse(input.clone()) {
             Ok((remainder, selections)) => {
                 // Enforce that if selections has any anonymous NamedSelection
                 // elements, there is only one and it's the only NamedSelection in
@@ -1739,12 +1745,12 @@ impl Alias {
     }
 
     pub(crate) fn parse(input: Span) -> ParseResult<Self> {
-        tuple((Key::parse, spaces_or_comments, ranged_span(":")))(input).map(
-            |(input, (name, _, colon))| {
+        (Key::parse, spaces_or_comments, ranged_span(":"))
+            .parse(input)
+            .map(|(input, (name, _, colon))| {
                 let range = merge_ranges(name.range(), colon.range());
                 (input, Self { name, range })
-            },
-        )
+            })
     }
 }
 
@@ -1761,7 +1767,8 @@ impl Key {
         alt((
             map(parse_identifier, |id| id.take_as(Key::Field)),
             map(parse_string_literal, |s| s.take_as(Key::Quoted)),
-        ))(input)
+        ))
+        .parse(input)
     }
 
     pub fn field(name: &str) -> Self {
@@ -1834,15 +1841,13 @@ impl Display for Key {
 
 pub(super) fn is_identifier(input: &str) -> bool {
     // TODO Don't use the whole parser for this?
-    all_consuming(parse_identifier_no_space)(new_span_with_spec(
-        input,
-        JSONSelection::default_connect_spec(),
-    ))
-    .is_ok()
+    all_consuming(parse_identifier_no_space)
+        .parse(new_span_with_spec(input, ConnectSpec::latest()))
+        .is_ok()
 }
 
 fn parse_identifier(input: Span) -> ParseResult<WithRange<String>> {
-    preceded(spaces_or_comments, parse_identifier_no_space)(input)
+    preceded(spaces_or_comments, parse_identifier_no_space).parse(input)
 }
 
 fn parse_identifier_no_space(input: Span) -> ParseResult<WithRange<String>> {
@@ -1851,7 +1856,8 @@ fn parse_identifier_no_space(input: Span) -> ParseResult<WithRange<String>> {
         many0(one_of(
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789",
         )),
-    ))(input)
+    ))
+    .parse(input)
     .map(|(remainder, name)| {
         let range = Some(name.location_offset()..remainder.location_offset());
         (remainder, WithRange::new(name.to_string(), range))
@@ -1887,7 +1893,7 @@ pub(crate) fn parse_string_literal(input: Span) -> ParseResult<WithRange<String>
                     continue;
                 }
                 if c == quote {
-                    remainder_opt = Some(input.slice(i + 1..));
+                    remainder_opt = Some(input.take_from(i + 1));
                     break;
                 }
                 chars.push(c);
@@ -1927,7 +1933,7 @@ impl Ranged for MethodArgs {
 impl MethodArgs {
     fn parse(input: Span) -> ParseResult<Self> {
         let input = spaces_or_comments(input)?.0;
-        let (mut input, open_paren) = ranged_span("(")(input)?;
+        let (mut input, open_paren) = ranged_span("(").parse(input)?;
         input = spaces_or_comments(input)?.0;
 
         let mut args = Vec::new();
@@ -1935,7 +1941,7 @@ impl MethodArgs {
             args.push(first);
             input = remainder;
 
-            while let Ok((remainder, _)) = tuple((spaces_or_comments, char(',')))(input.clone()) {
+            while let Ok((remainder, _)) = (spaces_or_comments, char(',')).parse(input.clone()) {
                 input = spaces_or_comments(remainder)?.0;
                 if let Ok((remainder, arg)) = LitExpr::parse(input.clone()) {
                     args.push(arg);
@@ -1947,7 +1953,7 @@ impl MethodArgs {
         }
 
         input = spaces_or_comments(input.clone())?.0;
-        let (input, close_paren) = ranged_span(")")(input.clone())?;
+        let (input, close_paren) = ranged_span(")").parse(input.clone())?;
 
         let range = merge_ranges(open_paren.range(), close_paren.range());
         Ok((input, Self { args, range }))
@@ -1977,7 +1983,7 @@ impl Ranged for SpreadArgs {
 impl SpreadArgs {
     /// Parse named arguments: `(name1: value1, name2: value2)`
     fn parse(input: Span) -> ParseResult<Self> {
-        let (mut input, open_paren) = ranged_span("(")(input)?;
+        let (mut input, open_paren) = ranged_span("(").parse(input)?;
         input = spaces_or_comments(input)?.0;
 
         let mut args = Vec::new();
@@ -1988,7 +1994,7 @@ impl SpreadArgs {
             input = remainder;
 
             // Parse additional comma-separated arguments
-            while let Ok((remainder, _)) = tuple((spaces_or_comments, char(',')))(input.clone()) {
+            while let Ok((remainder, _)) = (spaces_or_comments, char(',')).parse(input.clone()) {
                 input = spaces_or_comments(remainder)?.0;
                 if let Ok((remainder, arg)) = Self::parse_single_arg(input.clone()) {
                     args.push(arg);
@@ -2000,7 +2006,7 @@ impl SpreadArgs {
         }
 
         input = spaces_or_comments(input)?.0;
-        let (input, close_paren) = ranged_span(")")(input)?;
+        let (input, close_paren) = ranged_span(")").parse(input)?;
 
         let range = merge_ranges(open_paren.range(), close_paren.range());
         Ok((input, Self { args, range }))
@@ -2031,15 +2037,6 @@ mod tests {
     use crate::connectors::json_selection::helpers::span_is_all_spaces_or_comments;
     use crate::connectors::json_selection::location::new_span;
     use crate::selection;
-
-    #[test]
-    fn test_default_connect_spec() {
-        // We don't necessarily want to update what
-        // JSONSelection::default_connect_spec() returns just because
-        // ConnectSpec::latest() changes, but we want to know when it happens,
-        // so we can consider updating.
-        assert_eq!(JSONSelection::default_connect_spec(), ConnectSpec::latest());
-    }
 
     #[test]
     fn test_identifier() {
@@ -2969,12 +2966,13 @@ mod tests {
 
         #[track_caller]
         fn check_path_parse_error(
+            spec: ConnectSpec,
             input: &str,
             expected_offset: usize,
             expected_message: impl Into<String>,
         ) {
             let expected_message: String = expected_message.into();
-            match PathSelection::parse(new_span_with_spec(input, ConnectSpec::latest())) {
+            match PathSelection::parse(new_span_with_spec(input, spec)) {
                 Ok((remainder, path)) => {
                     panic!(
                         "Expected error at offset {expected_offset} with message '{expected_message}', but got path {path:?} and remainder {remainder:?}",
@@ -2988,7 +2986,7 @@ mod tests {
                     assert_eq!(
                         e.input.extra,
                         SpanExtra {
-                            spec: ConnectSpec::latest(),
+                            spec,
                             errors: vec![(expected_message, expected_offset)],
                             local_vars: Vec::new(),
                         }
@@ -3000,19 +2998,24 @@ mod tests {
             }
         }
 
+        // Single-key path ambiguity is only enforced in V0_1/V0_2; in V0_3+
+        // the ambiguity was resolved by unifying NamedSelection variants.
         let single_key_path_error_message =
             "Single-key path must be prefixed with $. to avoid ambiguity with field name";
         check_path_parse_error(
+            ConnectSpec::V0_2,
             new_span("naked").fragment(),
             0,
             single_key_path_error_message,
         );
         check_path_parse_error(
+            ConnectSpec::V0_2,
             new_span("naked { hi }").fragment(),
             0,
             single_key_path_error_message,
         );
         check_path_parse_error(
+            ConnectSpec::V0_2,
             new_span("  naked { hi }").fragment(),
             2,
             single_key_path_error_message,
@@ -3021,16 +3024,19 @@ mod tests {
         let path_key_ambiguity_error_message =
             "Path selection . must be followed by key (identifier or quoted string literal)";
         check_path_parse_error(
+            ConnectSpec::latest(),
             new_span("valid.$invalid").fragment(),
             5,
             path_key_ambiguity_error_message,
         );
         check_path_parse_error(
+            ConnectSpec::latest(),
             new_span("  valid.$invalid").fragment(),
             7,
             path_key_ambiguity_error_message,
         );
         check_path_parse_error(
+            ConnectSpec::latest(),
             new_span("  valid . $invalid").fragment(),
             8,
             path_key_ambiguity_error_message,

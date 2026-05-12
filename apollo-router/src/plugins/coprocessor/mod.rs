@@ -6,7 +6,6 @@ use std::ops::ControlFlow;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use std::time::Instant;
 
 use bytes::Bytes;
 use futures::StreamExt;
@@ -42,14 +41,13 @@ use crate::plugin::PluginPrivate;
 use crate::plugins::telemetry::config_new::conditions::Condition;
 use crate::plugins::telemetry::config_new::router::selectors::RouterSelector;
 use crate::plugins::telemetry::config_new::subgraph::selectors::SubgraphSelector;
-use crate::register_private_plugin;
 use crate::services;
 use crate::services::PATH_QUERY_PARAM;
+use crate::services::PipelineStep;
 use crate::services::external::Control;
 use crate::services::external::DEFAULT_EXTERNALIZATION_TIMEOUT;
 use crate::services::external::EXTERNALIZABLE_VERSION;
 use crate::services::external::Externalizable;
-use crate::services::external::PipelineStep;
 use crate::services::external::externalize_header_map;
 use crate::services::http::HttpRequest;
 use crate::services::http::HttpResponse;
@@ -414,8 +412,8 @@ pub(super) struct SubgraphResponseConf {
     pub(super) headers: bool,
     /// Send the context
     pub(super) context: ContextConf,
-    /// Send the body
-    pub(super) body: bool,
+    /// Send the body (can be true/false or selective with data/errors/extensions)
+    pub(super) body: BodyConf,
     /// Send the service name
     pub(super) service_name: bool,
     /// Send the http status
@@ -457,6 +455,45 @@ struct Conf {
     /// The connector stage request/response configuration
     #[serde(default)]
     connector: connector::ConnectorStages,
+}
+
+/// Configuration for which body fields to send to coprocessor
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, JsonSchema)]
+#[serde(untagged)]
+pub(super) enum BodyConf {
+    /// Send entire body (true) or nothing (false)
+    All(bool),
+    /// Send specific fields
+    Selective(BodyFieldsConf),
+}
+
+impl Default for BodyConf {
+    fn default() -> Self {
+        BodyConf::All(false)
+    }
+}
+
+impl BodyConf {
+    /// Returns true if data or errors fields should be sent
+    /// Used to determine if GraphQL spec validation is needed
+    pub(super) fn should_send_data_or_errors(&self) -> bool {
+        match self {
+            BodyConf::All(send) => *send,
+            BodyConf::Selective(fields) => fields.data || fields.errors,
+        }
+    }
+}
+
+/// Configuration for selective body fields
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct BodyFieldsConf {
+    /// Send the data field
+    pub(super) data: bool,
+    /// Send the errors field
+    pub(super) errors: bool,
+    /// Send the extensions field
+    pub(super) extensions: bool,
 }
 
 /// Configures the context
@@ -610,13 +647,12 @@ pub(crate) fn update_context_from_coprocessor(
     Ok(())
 }
 
-fn record_coprocessor_duration(stage: PipelineStep, duration: Duration) {
-    f64_histogram!(
+fn get_coprocessor_timer(stage: PipelineStep) -> crate::metrics::HistogramTimerGuard {
+    f64_histogram_timer!(
         "apollo.router.operations.coprocessor.duration",
         "Time spent waiting for the coprocessor to answer, in seconds",
-        duration.as_secs_f64(),
         coprocessor.stage = stage.to_string()
-    );
+    )
 }
 
 fn record_coprocessor_operation(stage: PipelineStep, succeeded: bool) {
@@ -949,7 +985,6 @@ where
         .build();
 
     tracing::debug!(?payload, "externalized output");
-    let start = Instant::now();
     // Use a fresh context for the coprocessor HTTP call. The pipeline's request
     // context may carry extensions (eg, AWS SigV4 SigningParamsConfig used in the
     // HttpClientService) intended for subgraph requests, not for the coprocessor
@@ -957,13 +992,17 @@ where
     //
     // WARN: be careful if you're changing out this context to using the request's context; see
     // above, but also validate what happens downstream for that context
-    let co_processor_result = payload
-        .call(http_client, &coprocessor_url, Context::new())
-        .await;
+    let co_processor_result = {
+        // Instantiate timer within the scope of this coprocessor run so it will be
+        // dropped automatically when the run goes out of scope
+        let _timer = get_coprocessor_timer(PipelineStep::RouterRequest);
+        payload
+            .call(http_client, &coprocessor_url, Context::new())
+            .await
+        // elapsed time is recorded
+    };
     // Indicate the stage was executed to raise execution metric on parent
     *executed = true;
-    let duration = start.elapsed();
-    record_coprocessor_duration(PipelineStep::RouterRequest, duration);
 
     tracing::debug!(?co_processor_result, "co-processor returned");
     let mut co_processor_output = co_processor_result?;
@@ -1133,7 +1172,6 @@ where
 
     // Second, call our co-processor and get a reply.
     tracing::debug!(?payload, "externalized output");
-    let start = Instant::now();
     // Use a fresh context for the coprocessor HTTP call. The pipeline's request
     // context may carry extensions (eg, AWS SigV4 SigningParamsConfig used in the
     // HttpClientService) intended for subgraph requests, not for the coprocessor
@@ -1141,13 +1179,17 @@ where
     //
     // WARN: be careful if you're changing out this context to using the request's context; see
     // above, but also validate what happens downstream for that context
-    let co_processor_result = payload
-        .call(http_client.clone(), &coprocessor_url, Context::new())
-        .await;
+    let co_processor_result = {
+        // Instantiate timer within the scope of this coprocessor run so it will be
+        // dropped automatically when the run goes out of scope
+        let _timer = get_coprocessor_timer(PipelineStep::RouterResponse);
+        payload
+            .call(http_client.clone(), &coprocessor_url, Context::new())
+            .await
+        // elapsed time is recorded
+    };
     // Indicate the stage was executed to raise execution metric on parent
     *executed = true;
-    let duration = start.elapsed();
-    record_coprocessor_duration(PipelineStep::RouterResponse, duration);
 
     tracing::debug!(?co_processor_result, "co-processor returned");
     let co_processor_output = co_processor_result?;
@@ -1334,7 +1376,6 @@ where
         .build();
 
     tracing::debug!(?payload, "externalized output");
-    let start = Instant::now();
     // Use a fresh context for the coprocessor HTTP call. The pipeline's request
     // context may carry extensions (eg, AWS SigV4 SigningParamsConfig used in the
     // HttpClientService) intended for subgraph requests, not for the coprocessor
@@ -1342,13 +1383,17 @@ where
     //
     // WARN: be careful if you're changing out this context to using the request's context; see
     // above, but also validate what happens downstream for that context
-    let co_processor_result = payload
-        .call(http_client, &coprocessor_url, Context::new())
-        .await;
+    let co_processor_result = {
+        // Instantiate timer within the scope of this coprocessor run so it will be
+        // dropped automatically when the run goes out of scope
+        let _timer = get_coprocessor_timer(PipelineStep::SubgraphRequest);
+        payload
+            .call(http_client, &coprocessor_url, Context::new())
+            .await
+        // elapsed time is recorded
+    };
     // Indicate the stage was executed to raise execution metric on parent
     *executed = true;
-    let duration = start.elapsed();
-    record_coprocessor_duration(PipelineStep::SubgraphRequest, duration);
 
     tracing::debug!(?co_processor_result, "co-processor returned");
     let co_processor_output = co_processor_result?;
@@ -1480,10 +1525,7 @@ where
 
     let status_to_send = response_config.status_code.then(|| parts.status.as_u16());
 
-    let body_to_send = response_config
-        .body
-        .then(|| serde_json_bytes::to_value(&body))
-        .transpose()?;
+    let body_to_send = filter_graphql_response_body(&body, &response_config.body);
     let context_to_send = response_config.context.get_context(&response.context);
     let service_name = response_config.service_name.then_some(service_name);
     let subgraph_request_id = response_config
@@ -1502,7 +1544,6 @@ where
         .build();
 
     tracing::debug!(?payload, "externalized output");
-    let start = Instant::now();
     // Use a fresh context for the coprocessor HTTP call. The pipeline's request
     // context may carry extensions (eg, AWS SigV4 SigningParamsConfig used in the
     // HttpClientService) intended for subgraph requests, not for the coprocessor
@@ -1510,13 +1551,17 @@ where
     //
     // WARN: be careful if you're changing out this context to using the request's context; see
     // above, but also validate what happens downstream for that context
-    let co_processor_result = payload
-        .call(http_client, &coprocessor_url, Context::new())
-        .await;
+    let co_processor_result = {
+        // Instantiate timer within the scope of this coprocessor run so it will be
+        // dropped automatically when the run goes out of scope
+        let _timer = get_coprocessor_timer(PipelineStep::SubgraphResponse);
+        payload
+            .call(http_client, &coprocessor_url, Context::new())
+            .await
+        // elapsed time is recorded
+    };
     // Indicate the stage was executed to raise execution metric on parent
     *executed = true;
-    let duration = start.elapsed();
-    record_coprocessor_duration(PipelineStep::SubgraphResponse, duration);
 
     tracing::debug!(?co_processor_result, "co-processor returned");
     let co_processor_output = co_processor_result?;
@@ -1524,7 +1569,7 @@ where
     validate_coprocessor_output(&co_processor_output, PipelineStep::SubgraphResponse)?;
 
     // Check if the incoming GraphQL response was valid according to GraphQL spec
-    let incoming_payload_was_valid = was_incoming_payload_valid(&body, response_config.body);
+    let incoming_payload_was_valid = was_incoming_payload_valid(&body, &response_config.body);
 
     // Third, process our reply and act on the contents. Our processing logic is
     // that we replace "bits" of our incoming response with the updated bits if they
@@ -1536,6 +1581,7 @@ where
         co_processor_output.body,
         response_validation,
         incoming_payload_was_valid,
+        &response_config.body,
     )?;
 
     response.response = http::Response::from_parts(parts, new_body);
@@ -1605,10 +1651,34 @@ pub(super) fn internalize_header_map(
 fn apply_response_post_processing(
     mut new_body: graphql::Response,
     original_response_body: &graphql::Response,
+    body_conf: &BodyConf,
 ) -> graphql::Response {
     // Needs to take back these 2 fields because it's skipped by serde
     new_body.subscribed = original_response_body.subscribed;
     new_body.created_at = original_response_body.created_at;
+
+    // Preserve fields that weren't sent to the coprocessor
+    match body_conf {
+        BodyConf::All(true) => {
+            // All fields were sent, no need to preserve anything
+        }
+        BodyConf::All(false) => {
+            // Nothing was sent, should not happen in this code path
+        }
+        BodyConf::Selective(fields) => {
+            // Preserve fields that weren't sent
+            if !fields.data {
+                new_body.data = original_response_body.data.clone();
+            }
+            if !fields.errors {
+                new_body.errors = original_response_body.errors.clone();
+            }
+            if !fields.extensions {
+                new_body.extensions = original_response_body.extensions.clone();
+            }
+        }
+    }
+
     // Required because for subscription if data is Some(Null) it won't cut the subscription
     // And in some languages they don't have any differences between Some(Null) and Null
     if original_response_body.data == Some(Value::Null)
@@ -1628,14 +1698,56 @@ pub(super) fn is_graphql_response_minimally_valid(response: &graphql::Response) 
 }
 
 /// Check if the incoming payload was valid for conditional validation purposes.
-/// Returns true if body was not sent to coprocessor OR if the response is minimally valid.
-pub(super) fn was_incoming_payload_valid(response: &graphql::Response, body_sent: bool) -> bool {
-    if body_sent {
-        // If we sent the body to the coprocessor, check if it was minimally valid
+/// Returns true if data/errors were not sent to coprocessor OR if the response is minimally valid.
+/// Note: Extensions-only configurations skip GraphQL spec validation since extensions don't affect validity.
+pub(super) fn was_incoming_payload_valid(
+    response: &graphql::Response,
+    body_conf: &BodyConf,
+) -> bool {
+    if body_conf.should_send_data_or_errors() {
+        // If we sent data or errors to the coprocessor, check if it was minimally valid per GraphQL spec
         is_graphql_response_minimally_valid(response)
     } else {
-        // If we didn't send the body, assume it was valid
+        // If we only sent extensions (or nothing), skip GraphQL spec validation
         true
+    }
+}
+
+/// Filter a GraphQL response body based on configuration.
+/// Returns None if no fields should be sent, or a Value containing only the configured fields.
+pub(super) fn filter_graphql_response_body(
+    response: &graphql::Response,
+    body_conf: &BodyConf,
+) -> Option<Value> {
+    match body_conf {
+        BodyConf::All(false) => None,
+        BodyConf::All(true) => {
+            Some(serde_json_bytes::to_value(response).expect("serialization will not fail"))
+        }
+        BodyConf::Selective(fields) => {
+            if !fields.data && !fields.errors && !fields.extensions {
+                return None;
+            }
+            let mut obj = serde_json_bytes::Map::new();
+            if fields.data {
+                if let Some(data) = &response.data {
+                    obj.insert("data", data.clone());
+                } else {
+                    obj.insert("data", Value::Null);
+                }
+            }
+            if fields.errors {
+                obj.insert(
+                    "errors",
+                    serde_json_bytes::to_value(&response.errors)
+                        .expect("serialization will not fail"),
+                );
+            }
+            if fields.extensions {
+                obj.insert("extensions", Value::Object(response.extensions.clone()));
+            }
+            Some(Value::Object(obj))
+        }
     }
 }
 
@@ -1679,6 +1791,7 @@ pub(super) fn handle_graphql_response(
     copro_response_body: Option<Value>,
     response_validation: bool,
     incoming_payload_was_valid: bool,
+    body_conf: &BodyConf,
 ) -> Result<graphql::Response, BoxError> {
     // Enable conditional validation: only validate coprocessor responses when the incoming payload was valid.
     // This prevents validation failures for responses that were already invalid before being sent to the coprocessor.
@@ -1695,12 +1808,12 @@ pub(super) fn handle_graphql_response(
         Some(value) => {
             if should_validate {
                 let new_body = graphql::Response::from_value(value)?;
-                apply_response_post_processing(new_body, &original_response_body)
+                apply_response_post_processing(new_body, &original_response_body, body_conf)
             } else {
                 // When validation is disabled, use the old behavior - just deserialize without GraphQL validation
                 match serde_json_bytes::from_value::<graphql::Response>(value) {
                     Ok(new_body) => {
-                        apply_response_post_processing(new_body, &original_response_body)
+                        apply_response_post_processing(new_body, &original_response_body, body_conf)
                     }
                     Err(_) => {
                         // If deserialization fails completely, return original response

@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 700">
+  <defs>
+    <style>
+      .title { font: bold 20px sans-serif; fill: #1a1a2e; }
+      .subtitle { font: italic 14px sans-serif; fill: #666; }
+      .actor { font: bold 12px sans-serif; fill: #fff; }
+      .actor-box { fill: #2d6a4f; stroke: #1b4332; stroke-width: 2; rx: 6; }
+      .lifeline { stroke: #74c69d; stroke-width: 1.5; stroke-dasharray: 6,4; }
+      .message { font: 12px sans-serif; fill: #1a1a2e; }
+      .message-bold { font: bold 12px sans-serif; fill: #1a1a2e; }
+      .arrow { stroke: #2d6a4f; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+      .arrow-return { stroke: #74c69d; stroke-width: 1.5; stroke-dasharray: 5,3; fill: none; marker-end: url(#arrowhead-light); }
+      .arrow-self { stroke: #2d6a4f; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+      .activation { fill: #b7e4c7; stroke: #74c69d; stroke-width: 1; }
+      .note { fill: #d8f3dc; stroke: #95d5b2; stroke-width: 1; rx: 4; }
+      .note-text { font: 11px sans-serif; fill: #2d6a4f; }
+      .phase-label { font: bold 14px sans-serif; fill: #1b4332; }
+      .phase-box { fill: #d8f3dc; stroke: #95d5b2; stroke-width: 1; rx: 4; }
+      .data-box { fill: #fff; stroke: #2d6a4f; stroke-width: 1.5; rx: 4; }
+      .data-text { font: 11px monospace; fill: #1b4332; }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#2d6a4f"/>
+    </marker>
+    <marker id="arrowhead-light" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#74c69d"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="550" y="35" text-anchor="middle" class="title">Phase 2: Router Initialization</text>
+  <text x="550" y="55" text-anchor="middle" class="subtitle">Loading Connectors into the Router Service</text>
+
+  <!-- Actors -->
+  <g id="actors">
+    <!-- Router Startup -->
+    <rect x="50" y="75" width="110" height="40" class="actor-box"/>
+    <text x="105" y="100" text-anchor="middle" class="actor">Router Startup</text>
+    <line x1="105" y1="115" x2="105" y2="650" class="lifeline"/>
+
+    <!-- Supergraph Service -->
+    <rect x="200" y="75" width="130" height="40" class="actor-box"/>
+    <text x="265" y="100" text-anchor="middle" class="actor">SupergraphService</text>
+    <line x1="265" y1="115" x2="265" y2="650" class="lifeline"/>
+
+    <!-- expand_connectors -->
+    <rect x="370" y="75" width="130" height="40" class="actor-box"/>
+    <text x="435" y="100" text-anchor="middle" class="actor">expand_connectors</text>
+    <line x1="435" y1="115" x2="435" y2="650" class="lifeline"/>
+
+    <!-- Query Planner -->
+    <rect x="540" y="75" width="110" height="40" class="actor-box"/>
+    <text x="595" y="100" text-anchor="middle" class="actor">QueryPlanner</text>
+    <line x1="595" y1="115" x2="595" y2="650" class="lifeline"/>
+
+    <!-- Connectors Plugin -->
+    <rect x="690" y="75" width="130" height="40" class="actor-box"/>
+    <text x="755" y="100" text-anchor="middle" class="actor">ConnectorsPlugin</text>
+    <line x1="755" y1="115" x2="755" y2="650" class="lifeline"/>
+
+    <!-- Request Context -->
+    <rect x="860" y="75" width="120" height="40" class="actor-box"/>
+    <text x="920" y="100" text-anchor="middle" class="actor">Request Context</text>
+    <line x1="920" y1="115" x2="920" y2="650" class="lifeline"/>
+  </g>
+
+  <!-- Phase 1: Schema Loading -->
+  <rect x="20" y="130" width="1060" height="150" class="phase-box" opacity="0.3"/>
+  <text x="35" y="150" class="phase-label">1. Schema Loading &amp; Connector Expansion</text>
+
+  <rect x="100" y="165" width="10" height="105" class="activation"/>
+  <rect x="260" y="175" width="10" height="85" class="activation"/>
+  <rect x="430" y="185" width="10" height="65" class="activation"/>
+
+  <path d="M105,170 L260,170" class="arrow"/>
+  <text x="182" y="165" text-anchor="middle" class="message">load_supergraph(sdl)</text>
+
+  <path d="M265,185 L430,185" class="arrow"/>
+  <text x="347" y="180" text-anchor="middle" class="message-bold">expand_connectors(schema)</text>
+
+  <!-- Note: Expansion result -->
+  <rect x="455" y="195" width="200" height="55" class="note"/>
+  <text x="465" y="210" class="note-text">Returns ExpansionResult:</text>
+  <text x="465" y="225" class="note-text">- raw_sdl (expanded)</text>
+  <text x="465" y="240" class="note-text">- Connectors { by_service_name }</text>
+
+  <path d="M430,250 L270,250" class="arrow-return"/>
+  <text x="350" y="268" text-anchor="middle" class="message">ExpansionResult::Expanded</text>
+
+  <!-- Phase 2: Query Planning Setup -->
+  <rect x="20" y="285" width="1060" height="130" class="phase-box" opacity="0.3"/>
+  <text x="35" y="305" class="phase-label">2. Query Planner Configuration</text>
+
+  <rect x="260" y="320" width="10" height="85" class="activation"/>
+  <rect x="590" y="335" width="10" height="60" class="activation"/>
+
+  <path d="M265,330 L590,330" class="arrow"/>
+  <text x="427" y="325" text-anchor="middle" class="message">create_planner(expanded_sdl)</text>
+
+  <!-- Data box: Synthetic subgraphs -->
+  <rect x="615" y="340" width="220" height="50" class="data-box"/>
+  <text x="625" y="358" class="data-text">Each connector becomes:</text>
+  <text x="625" y="373" class="data-text">subgraph: "{name}_{position}"</text>
+  <text x="625" y="388" class="data-text">e.g., "products_Query.product"</text>
+
+  <path d="M590,395 L270,395" class="arrow-return"/>
+  <text x="430" y="390" text-anchor="middle" class="message">QueryPlanner with connector subgraphs</text>
+
+  <!-- Phase 3: Plugin Initialization -->
+  <rect x="20" y="420" width="1060" height="100" class="phase-box" opacity="0.3"/>
+  <text x="35" y="440" class="phase-label">3. Connectors Plugin Setup</text>
+
+  <rect x="100" y="455" width="10" height="55" class="activation"/>
+  <rect x="750" y="465" width="10" height="40" class="activation"/>
+
+  <path d="M105,470 L750,470" class="arrow"/>
+  <text x="427" y="465" text-anchor="middle" class="message">Connectors::new(config) + supergraph_service()</text>
+
+  <!-- Note: Plugin config -->
+  <rect x="770" y="450" width="180" height="55" class="note"/>
+  <text x="780" y="465" class="note-text">Plugin configures:</text>
+  <text x="780" y="480" class="note-text">- max_requests limit</text>
+  <text x="780" y="495" class="note-text">- debug_extensions flag</text>
+
+  <!-- Phase 4: Request Time Storage -->
+  <rect x="20" y="525" width="1060" height="115" class="phase-box" opacity="0.3"/>
+  <text x="35" y="545" class="phase-label">4. Per-Request Context Setup (at query time)</text>
+
+  <rect x="750" y="560" width="10" height="70" class="activation"/>
+  <rect x="915" y="580" width="10" height="40" class="activation"/>
+
+  <path d="M755,575 L915,575" class="arrow"/>
+  <text x="835" y="570" text-anchor="middle" class="message-bold">store_connectors(ctx)</text>
+
+  <!-- Data box: Context storage -->
+  <rect x="770" y="595" width="260" height="40" class="data-box"/>
+  <text x="780" y="612" class="data-text">ctx.extensions.insert(</text>
+  <text x="780" y="627" class="data-text">  Arc&lt;IndexMap&lt;str, Connector&gt;&gt;)</text>
+
+  <path d="M915,620 L760,620" class="arrow-return"/>
+
+  <!-- Legend -->
+  <rect x="20" y="655" width="400" height="35" fill="none" stroke="#95d5b2" rx="4"/>
+  <text x="30" y="672" class="note-text">Files: supergraph/service.rs, expand/mod.rs, plugins/connectors/plugin.rs</text>
+  <text x="30" y="685" class="note-text">Key: Connectors stored in Arc for efficient sharing across requests</text>
+</svg>

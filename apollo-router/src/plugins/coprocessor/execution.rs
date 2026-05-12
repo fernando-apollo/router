@@ -46,8 +46,8 @@ pub(super) struct ExecutionResponseConf {
     pub(super) headers: bool,
     /// Send the context
     pub(super) context: ContextConf,
-    /// Send the body
-    pub(super) body: bool,
+    /// Send the body (can be true/false or selective with data/errors/extensions)
+    pub(super) body: BodyConf,
     /// Send the SDL
     pub(super) sdl: bool,
     /// Send the HTTP status
@@ -236,18 +236,21 @@ where
         .build();
 
     tracing::debug!(?payload, "externalized output");
-    let start = Instant::now();
 
     // We use a new context here to avoid any risk of carrying extensions to coprocessor calls that
     // we don't intend for coprocessor calls; if in the future we change it, make sure to
     // understand what could be sent to coprocessors and how that might affect their behavior
-    let co_processor_result = payload
-        .call(http_client, &coprocessor_url, Context::new())
-        .await;
+    let co_processor_result = {
+        // Instantiate timer within the scope of this coprocessor run so it will be
+        // dropped automatically when the run goes out of scope
+        let _timer = get_coprocessor_timer(PipelineStep::ExecutionRequest);
+        payload
+            .call(http_client, &coprocessor_url, Context::new())
+            .await
+        // elapsed time is recorded
+    };
     // Indicate the stage was executed to raise execution metric on parent
     *executed = true;
-    let duration = start.elapsed();
-    record_coprocessor_duration(PipelineStep::ExecutionRequest, duration);
 
     tracing::debug!(?co_processor_result, "co-processor returned");
     let co_processor_output = co_processor_result?;
@@ -373,9 +376,7 @@ where
     let headers_to_send = response_config
         .headers
         .then(|| externalize_header_map(&parts.headers));
-    let body_to_send = response_config
-        .body
-        .then(|| serde_json_bytes::to_value(&first).expect("serialization will not fail"));
+    let body_to_send = filter_graphql_response_body(&first, &response_config.body);
     let status_to_send = response_config.status_code.then(|| parts.status.as_u16());
     let context_to_send = response_config.context.get_context(&response.context);
     let sdl_to_send = response_config.sdl.then(|| sdl.clone().to_string());
@@ -393,17 +394,20 @@ where
 
     // Second, call our co-processor and get a reply.
     tracing::debug!(?payload, "externalized output");
-    let start = Instant::now();
     // We use a new context here to avoid any risk of carrying extensions to coprocessor calls that
     // we don't intend for coprocessor calls; if in the future we change it, make sure to
     // understand what could be sent to coprocessors and how that might affect their behavior
-    let co_processor_result = payload
-        .call(http_client.clone(), &coprocessor_url, Context::new())
-        .await;
+    let co_processor_result = {
+        // Instantiate timer within the scope of this coprocessor run so it will be
+        // dropped automatically when the run goes out of scope
+        let _timer = get_coprocessor_timer(PipelineStep::ExecutionResponse);
+        payload
+            .call(http_client.clone(), &coprocessor_url, Context::new())
+            .await
+        // elapsed time is recorded
+    };
     // Indicate the stage was executed to raise execution metric on parent
     *executed = true;
-    let duration = start.elapsed();
-    record_coprocessor_duration(PipelineStep::ExecutionResponse, duration);
 
     tracing::debug!(?co_processor_result, "co-processor returned");
     let co_processor_output = co_processor_result?;
@@ -412,7 +416,7 @@ where
 
     // Check if the incoming GraphQL response was valid according to GraphQL spec
     let incoming_payload_was_valid =
-        crate::plugins::coprocessor::was_incoming_payload_valid(&first, response_config.body);
+        crate::plugins::coprocessor::was_incoming_payload_valid(&first, &response_config.body);
 
     // Third, process our reply and act on the contents. Our processing logic is
     // that we replace "bits" of our incoming response with the updated bits if they
@@ -423,6 +427,7 @@ where
         co_processor_output.body,
         response_validation,
         incoming_payload_was_valid,
+        &response_config.body,
     )?;
 
     if let Some(control) = co_processor_output.control {
@@ -452,10 +457,8 @@ where
             let response_config_context = response_config.context.clone();
 
             async move {
-                let body_to_send = response_config.body.then(|| {
-                    serde_json_bytes::to_value(&deferred_response)
-                        .expect("serialization will not fail")
-                });
+                let body_to_send =
+                    filter_graphql_response_body(&deferred_response, &response_config.body);
                 let context_to_send = response_config_context.get_context(&generator_map_context);
 
                 // Note: We deliberately DO NOT send headers or status_code even if the user has
@@ -488,7 +491,7 @@ where
                 let incoming_payload_was_valid =
                     crate::plugins::coprocessor::was_incoming_payload_valid(
                         &deferred_response,
-                        response_config.body,
+                        &response_config.body,
                     );
 
                 // Third, process our reply and act on the contents. Our processing logic is
@@ -500,6 +503,7 @@ where
                     co_processor_output.body,
                     response_validation,
                     incoming_payload_was_valid,
+                    &response_config.body,
                 )?;
 
                 if let Some(context) = co_processor_output.context {
@@ -844,7 +848,7 @@ mod tests {
             response: ExecutionResponseConf {
                 headers: true,
                 context: ContextConf::NewContextConf(NewContextConf::All),
-                body: true,
+                body: BodyConf::All(true),
                 sdl: true,
                 status_code: false,
                 url: None,
@@ -981,7 +985,7 @@ mod tests {
             response: ExecutionResponseConf {
                 headers: true,
                 context: ContextConf::NewContextConf(NewContextConf::All),
-                body: true,
+                body: BodyConf::All(true),
                 sdl: true,
                 status_code: false,
                 url: None,
@@ -1093,7 +1097,7 @@ mod tests {
             response: ExecutionResponseConf {
                 headers: true,
                 context: ContextConf::NewContextConf(NewContextConf::All),
-                body: true,
+                body: BodyConf::All(true),
                 sdl: true,
                 status_code: false,
                 url: None,

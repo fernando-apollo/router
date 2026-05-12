@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900">
+  <defs>
+    <style>
+      .title { font: bold 20px sans-serif; fill: #1a1a2e; }
+      .subtitle { font: italic 14px sans-serif; fill: #666; }
+      .actor { font: bold 13px sans-serif; fill: #fff; }
+      .actor-box { fill: #4a4e69; stroke: #22223b; stroke-width: 2; rx: 6; }
+      .lifeline { stroke: #9a8c98; stroke-width: 1.5; stroke-dasharray: 6,4; }
+      .message { font: 12px sans-serif; fill: #1a1a2e; }
+      .message-bold { font: bold 12px sans-serif; fill: #1a1a2e; }
+      .arrow { stroke: #4a4e69; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+      .arrow-return { stroke: #9a8c98; stroke-width: 1.5; stroke-dasharray: 5,3; fill: none; marker-end: url(#arrowhead-light); }
+      .activation { fill: #c9ada7; stroke: #9a8c98; stroke-width: 1; }
+      .note { fill: #f2e9e4; stroke: #c9ada7; stroke-width: 1; rx: 4; }
+      .note-text { font: 11px sans-serif; fill: #4a4e69; }
+      .phase-label { font: bold 14px sans-serif; fill: #22223b; }
+      .phase-box { fill: #e8e8e8; stroke: #aaa; stroke-width: 1; rx: 4; }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#4a4e69"/>
+    </marker>
+    <marker id="arrowhead-light" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#9a8c98"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="600" y="35" text-anchor="middle" class="title">Phase 1: Schema Parsing &amp; Composition</text>
+  <text x="600" y="55" text-anchor="middle" class="subtitle">Building Connectors from GraphQL Schema Directives</text>
+
+  <!-- Actors -->
+  <g id="actors">
+    <!-- expand_connectors -->
+    <rect x="60" y="75" width="130" height="40" class="actor-box"/>
+    <text x="125" y="100" text-anchor="middle" class="actor">expand_connectors</text>
+    <line x1="125" y1="115" x2="125" y2="850" class="lifeline"/>
+
+    <!-- Connector::from_schema -->
+    <rect x="230" y="75" width="140" height="40" class="actor-box"/>
+    <text x="300" y="100" text-anchor="middle" class="actor">Connector::from_schema</text>
+    <line x1="300" y1="115" x2="300" y2="850" class="lifeline"/>
+
+    <!-- ConnectLink -->
+    <rect x="410" y="75" width="100" height="40" class="actor-box"/>
+    <text x="460" y="100" text-anchor="middle" class="actor">ConnectLink</text>
+    <line x1="460" y1="115" x2="460" y2="850" class="lifeline"/>
+
+    <!-- Directive Extractors -->
+    <rect x="550" y="75" width="140" height="40" class="actor-box"/>
+    <text x="620" y="100" text-anchor="middle" class="actor">Directive Extractors</text>
+    <line x1="620" y1="115" x2="620" y2="850" class="lifeline"/>
+
+    <!-- MappingRegistry -->
+    <rect x="730" y="75" width="130" height="40" class="actor-box"/>
+    <text x="795" y="100" text-anchor="middle" class="actor">MappingRegistry</text>
+    <line x1="795" y1="115" x2="795" y2="850" class="lifeline"/>
+
+    <!-- JSONSelection Parser -->
+    <rect x="900" y="75" width="140" height="40" class="actor-box"/>
+    <text x="970" y="100" text-anchor="middle" class="actor">JSONSelection Parser</text>
+    <line x1="970" y1="115" x2="970" y2="850" class="lifeline"/>
+  </g>
+
+  <!-- Phase 1: Initial Schema Processing -->
+  <rect x="20" y="130" width="1160" height="130" class="phase-box" opacity="0.3"/>
+  <text x="35" y="150" class="phase-label">1. Link Resolution</text>
+
+  <!-- Activation boxes -->
+  <rect x="120" y="160" width="10" height="90" class="activation"/>
+  <rect x="295" y="170" width="10" height="70" class="activation"/>
+  <rect x="455" y="180" width="10" height="50" class="activation"/>
+
+  <!-- Messages -->
+  <path d="M125,165 L295,165" class="arrow"/>
+  <text x="210" y="160" text-anchor="middle" class="message">split_subgraph(schema)</text>
+
+  <path d="M300,180 L455,180" class="arrow"/>
+  <text x="377" y="175" text-anchor="middle" class="message">ConnectLink::new(schema)</text>
+
+  <path d="M455,205 L305,205" class="arrow-return"/>
+  <text x="380" y="220" text-anchor="middle" class="message">ConnectLink { spec: V0_4, directive_names }</text>
+
+  <!-- Phase 2: Directive Extraction -->
+  <rect x="20" y="265" width="1160" height="200" class="phase-box" opacity="0.3"/>
+  <text x="35" y="285" class="phase-label">2. Directive Extraction</text>
+
+  <rect x="295" y="295" width="10" height="160" class="activation"/>
+  <rect x="615" y="305" width="10" height="40" class="activation"/>
+  <rect x="615" y="355" width="10" height="40" class="activation"/>
+  <rect x="615" y="405" width="10" height="40" class="activation"/>
+
+  <path d="M300,310 L615,310" class="arrow"/>
+  <text x="457" y="305" text-anchor="middle" class="message">extract_source_directive_arguments()</text>
+
+  <path d="M615,340 L305,340" class="arrow-return"/>
+  <text x="457" y="335" text-anchor="middle" class="message">Vec&lt;SourceDirectiveArguments&gt;</text>
+
+  <path d="M300,360 L615,360" class="arrow"/>
+  <text x="457" y="355" text-anchor="middle" class="message">extract_connect_directive_arguments()</text>
+
+  <path d="M615,390 L305,390" class="arrow-return"/>
+  <text x="457" y="385" text-anchor="middle" class="message">Vec&lt;ConnectDirectiveArguments&gt;</text>
+
+  <path d="M300,410 L615,410" class="arrow"/>
+  <text x="457" y="405" text-anchor="middle" class="message">extract_mapping_directive_arguments()</text>
+
+  <path d="M615,440 L305,440" class="arrow-return"/>
+  <text x="457" y="435" text-anchor="middle" class="message">Vec&lt;MappingDirectiveArguments&gt;</text>
+
+  <!-- Phase 3: MappingRegistry Building -->
+  <rect x="20" y="470" width="1160" height="160" class="phase-box" opacity="0.3"/>
+  <text x="35" y="490" class="phase-label">3. MappingRegistry Building</text>
+
+  <rect x="295" y="505" width="10" height="115" class="activation"/>
+  <rect x="790" y="515" width="10" height="95" class="activation"/>
+  <rect x="965" y="535" width="10" height="30" class="activation"/>
+  <rect x="965" y="575" width="10" height="25" class="activation"/>
+
+  <path d="M300,520 L790,520" class="arrow"/>
+  <text x="545" y="515" text-anchor="middle" class="message-bold">MappingRegistry::from_schema()</text>
+
+  <path d="M795,540 L965,540" class="arrow"/>
+  <text x="880" y="535" text-anchor="middle" class="message">parse selection</text>
+
+  <path d="M965,560 L800,560" class="arrow-return"/>
+  <text x="880" y="555" text-anchor="middle" class="message">SubSelection</text>
+
+  <!-- Note for auto-map -->
+  <rect x="850" y="575" width="180" height="35" class="note"/>
+  <text x="860" y="590" class="note-text">If no selection:</text>
+  <text x="860" y="603" class="note-text">generate_auto_map_selection()</text>
+
+  <path d="M790,605 L305,605" class="arrow-return"/>
+  <text x="547" y="600" text-anchor="middle" class="message">MappingRegistry { mappings: IndexMap&lt;Name, MappingDefinition&gt; }</text>
+
+  <!-- Phase 4: Connector Building -->
+  <rect x="20" y="635" width="1160" height="205" class="phase-box" opacity="0.3"/>
+  <text x="35" y="655" class="phase-label">4. Connector Building (per @connect)</text>
+
+  <rect x="295" y="670" width="10" height="160" class="activation"/>
+  <rect x="790" y="690" width="10" height="50" class="activation"/>
+  <rect x="965" y="755" width="10" height="35" class="activation"/>
+
+  <path d="M300,695 L790,695" class="arrow"/>
+  <text x="545" y="690" text-anchor="middle" class="message-bold">expand_selection(&amp;connect.selection)</text>
+
+  <!-- Note for spread expansion -->
+  <rect x="620" y="700" width="160" height="50" class="note"/>
+  <text x="630" y="715" class="note-text">Replace ...TypeName</text>
+  <text x="630" y="728" class="note-text">with expanded selection</text>
+  <text x="630" y="741" class="note-text">(recursive + cycle check)</text>
+
+  <path d="M790,735 L305,735" class="arrow-return"/>
+  <text x="545" y="730" text-anchor="middle" class="message">JSONSelection (expanded)</text>
+
+  <path d="M300,760 L965,760" class="arrow"/>
+  <text x="632" y="755" text-anchor="middle" class="message">HttpJsonTransport::from_directive() + variable_references()</text>
+
+  <path d="M965,785 L305,785" class="arrow-return"/>
+  <text x="635" y="780" text-anchor="middle" class="message">HttpJsonTransport + request/response variable keys</text>
+
+  <path d="M300,815 L130,815" class="arrow-return"/>
+  <text x="215" y="810" text-anchor="middle" class="message-bold">Vec&lt;Connector&gt;</text>
+
+  <!-- Legend -->
+  <rect x="20" y="860" width="250" height="30" fill="none" stroke="#ccc" rx="4"/>
+  <text x="30" y="880" class="note-text">Files: models.rs, mapping_registry.rs, spec/*.rs</text>
+</svg>
