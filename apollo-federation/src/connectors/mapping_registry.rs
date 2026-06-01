@@ -124,7 +124,13 @@ impl MappingRegistry {
 
         let var_paths = match selection {
             TopLevelSelection::Named(sub) => sub.var_paths(),
-            TopLevelSelection::Path(path) => path.var_paths(),
+            TopLevelSelection::Value(lit) => {
+                if let LitExpr::Path(path) = lit.as_ref() {
+                    path.var_paths()
+                } else {
+                    Vec::new()
+                }
+            }
         };
 
         var_paths
@@ -172,8 +178,8 @@ impl MappingRegistry {
 
         match parsed.inner {
             TopLevelSelection::Named(sub) => Ok(TopLevelSelection::Named(sub)),
-            TopLevelSelection::Path(_) => Err(FederationError::internal(format!(
-                "Auto-map for type `{type_name}` generated unexpected path selection",
+            TopLevelSelection::Value(_) => Err(FederationError::internal(format!(
+                "Auto-map for type `{type_name}` generated unexpected value selection",
             ))),
         }
     }
@@ -303,10 +309,12 @@ impl MappingRegistry {
                  In v1, spread arguments must be literals (integer, float, string, boolean, null). \
                  Inline the selection or use separate mappings."
             ))),
-            LitExpr::Object(_) | LitExpr::Array(_) => Err(FederationError::internal(format!(
-                "Spread `...{mapping_name}({arg_name}: ...)` uses a complex value as argument. \
+            LitExpr::Object(_) | LitExpr::LegacyObject(_) | LitExpr::Array(_) => {
+                Err(FederationError::internal(format!(
+                    "Spread `...{mapping_name}({arg_name}: ...)` uses a complex value as argument. \
                  In v1, spread arguments must be literals (integer, float, string, boolean, null)."
-            ))),
+                )))
+            }
             LitExpr::LitPath(_, _) | LitExpr::OpChain(_, _) => {
                 Err(FederationError::internal(format!(
                     "Spread `...{mapping_name}({arg_name}: ...)` uses an expression as argument value. \
@@ -338,13 +346,22 @@ impl MappingRegistry {
                 if let [only] = expanded.selections.as_slice()
                     && (only.is_anonymous() || matches!(only.prefix, NamingPrefix::Spread(None)))
                 {
-                    return Ok(TopLevelSelection::Path(only.path.clone()));
+                    return Ok(TopLevelSelection::Value(only.path.clone()));
                 }
                 Ok(TopLevelSelection::Named(expanded))
             }
-            TopLevelSelection::Path(path) => {
-                let expanded = self.expand_path_selection(path, expanding, depth, substitutions)?;
-                Ok(TopLevelSelection::Path(expanded))
+            TopLevelSelection::Value(lit) => {
+                if let LitExpr::Path(path) = lit.as_ref() {
+                    let expanded =
+                        self.expand_path_selection(path, expanding, depth, substitutions)?;
+                    let range = expanded.range();
+                    Ok(TopLevelSelection::Value(WithRange::new(
+                        LitExpr::Path(expanded),
+                        range,
+                    )))
+                } else {
+                    Ok(TopLevelSelection::Value(lit.clone()))
+                }
             }
         }
     }
@@ -403,25 +420,33 @@ impl MappingRegistry {
                                 expanding.remove(type_name);
                                 new_selections.extend(result?.selections);
                             }
-                            TopLevelSelection::Path(path) => {
-                                let result =
-                                    self.expand_path_selection(path, expanding, next_depth, &subs);
-                                expanding.remove(type_name);
-                                let expanded_path = result?;
+                            TopLevelSelection::Value(lit) => {
+                                if let LitExpr::Path(path) = lit.as_ref() {
+                                    let result = self
+                                        .expand_path_selection(path, expanding, next_depth, &subs);
+                                    expanding.remove(type_name);
+                                    let expanded_path = result?;
 
-                                // Anonymous paths with subselections behave like inline spreads.
-                                let prefix = if expanded_path.is_anonymous()
-                                    && expanded_path.has_subselection()
-                                {
-                                    NamingPrefix::Spread(None)
+                                    let prefix = if expanded_path.is_anonymous()
+                                        && expanded_path.has_subselection()
+                                    {
+                                        NamingPrefix::Spread(None)
+                                    } else {
+                                        NamingPrefix::None
+                                    };
+
+                                    let range = expanded_path.range();
+                                    new_selections.push(NamedSelection {
+                                        prefix,
+                                        path: WithRange::new(LitExpr::Path(expanded_path), range),
+                                    });
                                 } else {
-                                    NamingPrefix::None
-                                };
-
-                                new_selections.push(NamedSelection {
-                                    prefix,
-                                    path: expanded_path,
-                                });
+                                    expanding.remove(type_name);
+                                    new_selections.push(NamedSelection {
+                                        prefix: NamingPrefix::None,
+                                        path: lit.clone(),
+                                    });
+                                }
                             }
                         }
                     } else {
@@ -463,8 +488,15 @@ impl MappingRegistry {
         depth: usize,
         substitutions: &HashMap<String, LitExpr>,
     ) -> Result<NamedSelection, FederationError> {
-        let expanded_path =
-            self.expand_path_selection(&named.path, expanding, depth, substitutions)?;
+        let expanded_path = if let LitExpr::Path(path) = named.path.as_ref() {
+            let expanded = self.expand_path_selection(path, expanding, depth, substitutions)?;
+            let range = expanded.range();
+            WithRange::new(LitExpr::Path(expanded), range)
+        } else {
+            let expanded =
+                self.expand_lit_expr(named.path.as_ref(), expanding, depth, substitutions)?;
+            WithRange::new(expanded, named.path.range())
+        };
 
         Ok(NamedSelection {
             prefix: named.prefix.clone(),
@@ -598,14 +630,18 @@ impl MappingRegistry {
             LitExpr::String(_) | LitExpr::Number(_) | LitExpr::Bool(_) | LitExpr::Null => {
                 Ok(lit_expr.clone())
             }
-            LitExpr::Object(obj) => {
+            LitExpr::Object(sub) => {
+                let expanded = self.expand_sub_selection(sub, expanding, depth, substitutions)?;
+                Ok(LitExpr::Object(expanded))
+            }
+            LitExpr::LegacyObject(obj) => {
                 let mut expanded_obj = apollo_compiler::collections::IndexMap::default();
                 for (key, value) in obj {
                     let expanded_value =
                         self.expand_lit_expr(value.as_ref(), expanding, depth, substitutions)?;
                     expanded_obj.insert(key.clone(), WithRange::new(expanded_value, value.range()));
                 }
-                Ok(LitExpr::Object(expanded_obj))
+                Ok(LitExpr::LegacyObject(expanded_obj))
             }
             LitExpr::Array(arr) => {
                 let mut expanded_arr = Vec::with_capacity(arr.len());
@@ -683,7 +719,7 @@ mod tests {
 
         match selection {
             TopLevelSelection::Named(sub) => assert_eq!(sub.selections.len(), 3),
-            TopLevelSelection::Path(_) => panic!("auto-map should generate named selection"),
+            TopLevelSelection::Value(_) => panic!("auto-map should generate named selection"),
         }
     }
 
@@ -709,7 +745,7 @@ mod tests {
         let definition = result.unwrap();
         match definition.selection {
             TopLevelSelection::Named(sub) => assert_eq!(sub.selections.len(), 2),
-            TopLevelSelection::Path(_) => panic!("expected named selection"),
+            TopLevelSelection::Value(_) => panic!("expected named selection"),
         }
     }
 
@@ -1176,7 +1212,7 @@ mod tests {
         assert!(!registry.has_mapping("Data"));
 
         let mapping = registry.get_mapping("DataPath").unwrap();
-        assert!(matches!(mapping.selection, TopLevelSelection::Path(_)));
+        assert!(matches!(mapping.selection, TopLevelSelection::Value(_)));
     }
 
     #[test]

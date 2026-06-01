@@ -421,7 +421,7 @@ mod helpers {
                 } => {
                     let field_type = self
                         .original_schema
-                        .get_type(field_def.ty.inner_named_type().clone())?;
+                        .get_type(field_def.ty.inner_named_type())?;
 
                     // We'll need to make sure that we always process the inputs first, since they need to be present
                     // before any dependent types
@@ -558,7 +558,7 @@ mod helpers {
             // valid subgraphs
             for arg in arguments {
                 let arg_type_name = arg.ty.inner_named_type();
-                let arg_type = self.original_schema.get_type(arg_type_name.clone())?;
+                let arg_type = self.original_schema.get_type(arg_type_name)?;
                 let arg_extended_type = arg_type.get(self.original_schema.schema())?;
 
                 // If the input type isn't built in, then we need to carry it over, making sure to only walk
@@ -608,8 +608,8 @@ mod helpers {
                 return self.copy_interface_object_keys(output_type_name, to_schema);
             };
 
-            let parent_type = self.original_schema.get_type(parent_type_name)?;
-            let output_type = to_schema.get_type(output_type_name)?;
+            let parent_type = self.original_schema.get_type(&parent_type_name)?;
+            let output_type = to_schema.get_type(&output_type_name)?;
             let key_for_type = match &connector.entity_resolver {
                 Some(EntityResolver::Explicit) => output_type,
                 _ => parent_type,
@@ -959,9 +959,7 @@ mod helpers {
             mutation_alias: &Name,
             parent_type_name: &Name,
         ) -> Result<(), FederationError> {
-            if mutation_alias == parent_type_name
-                && to_schema.get_type(mutation_alias.clone()).is_ok()
-            {
+            if mutation_alias == parent_type_name && to_schema.get_type(mutation_alias).is_ok() {
                 let mutation_root = SchemaRootDefinitionPosition {
                     root_kind: SchemaRootDefinitionKind::Mutation,
                 };
@@ -1085,7 +1083,7 @@ mod helpers {
                 } => {
                     let field_type = self
                         .original_schema
-                        .get_type(field_def.ty.inner_named_type().clone())?;
+                        .get_type(field_def.ty.inner_named_type())?;
 
                     // We'll need to make sure that we always process the inputs first, since they need to be present
                     // before any dependent types
@@ -1214,7 +1212,7 @@ mod helpers {
             // valid subgraphs
             for arg in arguments {
                 let arg_type_name = arg.ty.inner_named_type();
-                let arg_type = self.original_schema.get_type(arg_type_name.clone())?;
+                let arg_type = self.original_schema.get_type(arg_type_name)?;
                 let arg_extended_type = arg_type.get(self.original_schema.schema())?;
 
                 // If the input type isn't built in, then we need to carry it over, making sure to only walk
@@ -1257,8 +1255,8 @@ mod helpers {
                 return self.copy_interface_object_keys(output_type_name, to_schema);
             };
 
-            let parent_type = self.original_schema.get_type(parent_type_name)?;
-            let output_type = to_schema.get_type(output_type_name)?;
+            let parent_type = self.original_schema.get_type(&parent_type_name)?;
+            let output_type = to_schema.get_type(&output_type_name)?;
             let key_for_type = match &connector.entity_resolver {
                 Some(EntityResolver::Explicit) => output_type,
                 _ => parent_type,
@@ -1583,9 +1581,7 @@ mod helpers {
             mutation_alias: &Name,
             parent_type_name: &Name,
         ) -> Result<(), FederationError> {
-            if mutation_alias == parent_type_name
-                && to_schema.get_type(mutation_alias.clone()).is_ok()
-            {
+            if mutation_alias == parent_type_name && to_schema.get_type(mutation_alias).is_ok() {
                 let mutation_root = SchemaRootDefinitionPosition {
                     root_kind: SchemaRootDefinitionKind::Mutation,
                 };
