@@ -1,0 +1,15 @@
+---
+source: apollo-federation/src/connectors/validation/mod.rs
+assertion_line: 335
+expression: result.errors
+input_file: apollo-federation/src/connectors/validation/test_data/mapping_circular.graphql
+---
+[
+    Message {
+        code: CircularReference,
+        message: "Circular reference detected in @mapping: ...Node references itself",
+        locations: [
+            13:18..13:27,
+        ],
+    },
+]

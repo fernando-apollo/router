@@ -51,8 +51,6 @@ fuzz/timeout-*
 .settings.local.json
 CLAUDE.md
 CODEX_REVIEW.md
-apollo-federation/src/connectors/validation/snapshots
-apollo-federation/src/connectors/validation/test_data
 .claude
 
 # Temporary skills checkout directory for GitHub Copilot setup

@@ -1,0 +1,15 @@
+---
+source: apollo-federation/src/connectors/validation/mod.rs
+assertion_line: 335
+expression: result.errors
+input_file: apollo-federation/src/connectors/validation/test_data/mapping_unknown_spread.graphql
+---
+[
+    Message {
+        code: InvalidSelection,
+        message: "Unknown mapping reference: ...Missing. Make sure a @mapping directive is defined on type `Missing`.",
+        locations: [
+            13:18..13:30,
+        ],
+    },
+]

@@ -15,12 +15,14 @@ use multi_try::MultiTry;
 
 use self::entity::validate_entity_arg;
 use self::selection::Selection;
+use self::selection::mapping_error_message;
 use super::Code;
 use super::Message;
 use super::coordinates::ConnectDirectiveCoordinate;
 use super::errors::ErrorsCoordinate;
 use super::errors::IsSuccessArgument;
 use crate::connectors::ConnectSpec;
+use crate::connectors::MappingRegistry;
 use crate::connectors::Namespace;
 use crate::connectors::SourceName;
 use crate::connectors::id::ConnectedElement;
@@ -58,9 +60,26 @@ pub(super) fn fields_seen_by_all_connects(
     let connects: Vec<_> = connects.into_iter().flatten().collect();
     let mut messages: Vec<_> = messages.into_iter().flatten().collect();
 
+    // Build the @mapping registry once so each @connect selection can expand
+    // `...TypeName` spreads before type checking, mirroring the runtime path.
+    // On failure, fall back to an empty registry: connectors without spreads
+    // still validate normally, and spreads report "Unknown mapping reference"
+    // instead of spurious unresolved-field errors.
+    let registry = match MappingRegistry::from_schema(schema.schema) {
+        Ok(registry) => registry,
+        Err(err) => {
+            messages.push(Message {
+                code: Code::InvalidSelection,
+                message: mapping_error_message(&err),
+                locations: Vec::new(),
+            });
+            MappingRegistry::default()
+        }
+    };
+
     let mut seen_fields = Vec::new();
     let mut valid_id_names: HashMap<_, Vec<_>> = HashMap::new();
-    for connect in connects {
+    for mut connect in connects {
         if let Some(name) = connect.id.and_then(|value| value.as_str()) {
             match Name::new(name) {
                 Ok(name) => {
@@ -83,6 +102,12 @@ pub(super) fn fields_seen_by_all_connects(
                     });
                 }
             }
+        }
+        // Expand `...TypeName` spreads before type checking; a raw spread
+        // contributes zero seen fields and produces unresolved-field noise.
+        if let Err(message) = connect.selection.expand_mappings(&registry, schema) {
+            messages.push(message);
+            continue;
         }
         match connect.type_check() {
             Ok(seen_fields_for_connect) => {

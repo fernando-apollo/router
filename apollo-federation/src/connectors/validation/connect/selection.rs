@@ -22,6 +22,7 @@ use super::Message;
 use super::Name;
 use crate::connectors::ConnectSpec;
 use crate::connectors::JSONSelection;
+use crate::connectors::MappingRegistry;
 use crate::connectors::Namespace;
 use crate::connectors::PathSelection;
 use crate::connectors::SubSelection;
@@ -44,6 +45,8 @@ use crate::connectors::validation::graphql::subslice_location;
 use crate::connectors::variable::Phase;
 use crate::connectors::variable::Target;
 use crate::connectors::variable::VariableContext;
+use crate::error::FederationError;
+use crate::error::SingleFederationError;
 
 mod variables;
 
@@ -87,6 +90,39 @@ impl<'schema> Selection<'schema> {
             node,
             coordinate,
         })
+    }
+
+    /// Expand `...TypeName` spreads in the selection using the `@mapping` registry,
+    /// mirroring the runtime expansion in `models.rs`, so type checking sees the
+    /// fields the connector will actually resolve.
+    pub(super) fn expand_mappings(
+        &mut self,
+        registry: &MappingRegistry,
+        schema: &SchemaInfo,
+    ) -> Result<(), Message> {
+        match registry.expand_selection(&self.parsed) {
+            Ok(expanded) => {
+                self.parsed = expanded;
+                Ok(())
+            }
+            Err(err) => {
+                let message = mapping_error_message(&err);
+                let code = if message.contains("Circular reference") {
+                    Code::CircularReference
+                } else {
+                    Code::InvalidSelection
+                };
+                Err(Message {
+                    code,
+                    message,
+                    locations: self
+                        .node
+                        .line_column_range(&schema.sources)
+                        .into_iter()
+                        .collect(),
+                })
+            }
+        }
     }
 
     /// Type check the selection using the visitor pattern, returning a list of seen fields as
@@ -414,6 +450,19 @@ impl<'schema> Selection<'schema> {
                 .map(|validator| validator.seen_fields)
             }
         }
+    }
+}
+
+/// Extract a user-facing message from a `MappingRegistry` error.
+/// `SingleFederationError::Internal`'s `Display` prepends "An internal error has
+/// occurred, please report this bug to Apollo", which is wrong for a validation
+/// message about the user's schema.
+pub(super) fn mapping_error_message(err: &FederationError) -> String {
+    match err {
+        FederationError::SingleFederationError(SingleFederationError::Internal { message }) => {
+            message.clone()
+        }
+        other => other.to_string(),
     }
 }
 
