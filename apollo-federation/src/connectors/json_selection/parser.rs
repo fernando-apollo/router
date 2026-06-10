@@ -230,6 +230,15 @@ impl JSONSelection {
         }
     }
 
+    /// Compare this selection's top-level structure to another's, ignoring the
+    /// `spec` field. Useful when surveying how the same source text parses
+    /// under different [`ConnectSpec`] versions: PartialEq on `JSONSelection`
+    /// includes `spec`, so two structurally-identical parses for different
+    /// specs would otherwise compare unequal.
+    pub fn structural_eq(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+
     pub fn is_empty(&self) -> bool {
         match &self.inner {
             TopLevelSelection::Named(subselect) => subselect.selections.is_empty(),
@@ -589,6 +598,13 @@ impl VarPaths for JSONSelection {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct NamedSelection {
     pub(crate) prefix: NamingPrefix,
+    // The RHS of a `NamedSelection` is any `LitExpr`. A `PathList::Expr`
+    // node appears here only if the source contained an explicit `$(...)`
+    // wrapper — bare literal values like `alias: "Book"` are stored as
+    // their own `LitExpr` variant (e.g. `LitExpr::String`) without any
+    // synthetic wrapping. The field is kept named `path` for continuity
+    // with call sites that historically worked with a `PathSelection`,
+    // but it now accepts the full `LitExpr` surface.
     pub(crate) path: WithRange<LitExpr>,
 }
 
