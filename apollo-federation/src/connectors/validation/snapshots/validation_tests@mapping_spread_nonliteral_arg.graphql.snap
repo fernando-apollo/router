@@ -1,0 +1,14 @@
+---
+source: apollo-federation/src/connectors/validation/mod.rs
+expression: result.errors
+input_file: apollo-federation/src/connectors/validation/test_data/mapping_spread_nonliteral_arg.graphql
+---
+[
+    Message {
+        code: InvalidSelection,
+        message: "Spread `...User(limit: ...)` uses a variable/path as argument value. In v1, spread arguments must be literals (integer, float, string, boolean, null). Inline the selection or use separate mappings.",
+        locations: [
+            13:18..13:44,
+        ],
+    },
+]

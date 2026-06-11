@@ -1,0 +1,14 @@
+---
+source: apollo-federation/src/connectors/validation/mod.rs
+expression: result.errors
+input_file: apollo-federation/src/connectors/validation/test_data/mapping_spread_unknown_arg.graphql
+---
+[
+    Message {
+        code: InvalidSelection,
+        message: "Spread `...User(bogus: ...)` passes unknown argument `bogus`. Available parameters: limit",
+        locations: [
+            13:18..13:37,
+        ],
+    },
+]

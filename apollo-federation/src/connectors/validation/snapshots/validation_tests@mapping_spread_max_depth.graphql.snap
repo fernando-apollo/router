@@ -1,0 +1,14 @@
+---
+source: apollo-federation/src/connectors/validation/mod.rs
+expression: result.errors
+input_file: apollo-federation/src/connectors/validation/test_data/mapping_spread_max_depth.graphql
+---
+[
+    Message {
+        code: InvalidSelection,
+        message: "Mapping expansion exceeded maximum depth of 32. This may indicate an overly complex mapping chain.",
+        locations: [
+            13:18..13:25,
+        ],
+    },
+]

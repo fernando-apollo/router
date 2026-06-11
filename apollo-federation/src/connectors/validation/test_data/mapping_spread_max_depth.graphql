@@ -1,0 +1,404 @@
+extend schema
+  @link(
+    url: "https://specs.apollo.dev/connect/v0.5"
+    import: ["@connect", "@source", "@mapping"]
+  )
+  @source(name: "api", http: { baseURL: "http://127.0.0.1" })
+
+type Query {
+  t0(id: ID!): T0
+    @connect(
+      source: "api"
+      http: { GET: "/t/{$args.id}" }
+      selection: "...T0"
+    )
+}
+
+type T0
+  @mapping(
+    selection: """
+      next {
+        ...T1
+      }
+    """
+  ) {
+  next: T1
+}
+
+type T1
+  @mapping(
+    selection: """
+      next {
+        ...T2
+      }
+    """
+  ) {
+  next: T2
+}
+
+type T2
+  @mapping(
+    selection: """
+      next {
+        ...T3
+      }
+    """
+  ) {
+  next: T3
+}
+
+type T3
+  @mapping(
+    selection: """
+      next {
+        ...T4
+      }
+    """
+  ) {
+  next: T4
+}
+
+type T4
+  @mapping(
+    selection: """
+      next {
+        ...T5
+      }
+    """
+  ) {
+  next: T5
+}
+
+type T5
+  @mapping(
+    selection: """
+      next {
+        ...T6
+      }
+    """
+  ) {
+  next: T6
+}
+
+type T6
+  @mapping(
+    selection: """
+      next {
+        ...T7
+      }
+    """
+  ) {
+  next: T7
+}
+
+type T7
+  @mapping(
+    selection: """
+      next {
+        ...T8
+      }
+    """
+  ) {
+  next: T8
+}
+
+type T8
+  @mapping(
+    selection: """
+      next {
+        ...T9
+      }
+    """
+  ) {
+  next: T9
+}
+
+type T9
+  @mapping(
+    selection: """
+      next {
+        ...T10
+      }
+    """
+  ) {
+  next: T10
+}
+
+type T10
+  @mapping(
+    selection: """
+      next {
+        ...T11
+      }
+    """
+  ) {
+  next: T11
+}
+
+type T11
+  @mapping(
+    selection: """
+      next {
+        ...T12
+      }
+    """
+  ) {
+  next: T12
+}
+
+type T12
+  @mapping(
+    selection: """
+      next {
+        ...T13
+      }
+    """
+  ) {
+  next: T13
+}
+
+type T13
+  @mapping(
+    selection: """
+      next {
+        ...T14
+      }
+    """
+  ) {
+  next: T14
+}
+
+type T14
+  @mapping(
+    selection: """
+      next {
+        ...T15
+      }
+    """
+  ) {
+  next: T15
+}
+
+type T15
+  @mapping(
+    selection: """
+      next {
+        ...T16
+      }
+    """
+  ) {
+  next: T16
+}
+
+type T16
+  @mapping(
+    selection: """
+      next {
+        ...T17
+      }
+    """
+  ) {
+  next: T17
+}
+
+type T17
+  @mapping(
+    selection: """
+      next {
+        ...T18
+      }
+    """
+  ) {
+  next: T18
+}
+
+type T18
+  @mapping(
+    selection: """
+      next {
+        ...T19
+      }
+    """
+  ) {
+  next: T19
+}
+
+type T19
+  @mapping(
+    selection: """
+      next {
+        ...T20
+      }
+    """
+  ) {
+  next: T20
+}
+
+type T20
+  @mapping(
+    selection: """
+      next {
+        ...T21
+      }
+    """
+  ) {
+  next: T21
+}
+
+type T21
+  @mapping(
+    selection: """
+      next {
+        ...T22
+      }
+    """
+  ) {
+  next: T22
+}
+
+type T22
+  @mapping(
+    selection: """
+      next {
+        ...T23
+      }
+    """
+  ) {
+  next: T23
+}
+
+type T23
+  @mapping(
+    selection: """
+      next {
+        ...T24
+      }
+    """
+  ) {
+  next: T24
+}
+
+type T24
+  @mapping(
+    selection: """
+      next {
+        ...T25
+      }
+    """
+  ) {
+  next: T25
+}
+
+type T25
+  @mapping(
+    selection: """
+      next {
+        ...T26
+      }
+    """
+  ) {
+  next: T26
+}
+
+type T26
+  @mapping(
+    selection: """
+      next {
+        ...T27
+      }
+    """
+  ) {
+  next: T27
+}
+
+type T27
+  @mapping(
+    selection: """
+      next {
+        ...T28
+      }
+    """
+  ) {
+  next: T28
+}
+
+type T28
+  @mapping(
+    selection: """
+      next {
+        ...T29
+      }
+    """
+  ) {
+  next: T29
+}
+
+type T29
+  @mapping(
+    selection: """
+      next {
+        ...T30
+      }
+    """
+  ) {
+  next: T30
+}
+
+type T30
+  @mapping(
+    selection: """
+      next {
+        ...T31
+      }
+    """
+  ) {
+  next: T31
+}
+
+type T31
+  @mapping(
+    selection: """
+      next {
+        ...T32
+      }
+    """
+  ) {
+  next: T32
+}
+
+type T32
+  @mapping(
+    selection: """
+      next {
+        ...T33
+      }
+    """
+  ) {
+  next: T33
+}
+
+type T33
+  @mapping(
+    selection: """
+      next {
+        ...T34
+      }
+    """
+  ) {
+  next: T34
+}
+
+type T34
+  @mapping(
+    selection: """
+      next {
+        ...T35
+      }
+    """
+  ) {
+  next: T35
+}
+
+type T35 @mapping(selection: """ id """) {
+  id: ID!
+}

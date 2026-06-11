@@ -1,0 +1,14 @@
+---
+source: apollo-federation/src/connectors/validation/mod.rs
+expression: result.errors
+input_file: apollo-federation/src/connectors/validation/test_data/mapping_spread_parameterless_arg.graphql
+---
+[
+    Message {
+        code: InvalidSelection,
+        message: "Spread `...User(...)` passes arguments, but mapping `User` has no parameters.",
+        locations: [
+            13:18..13:37,
+        ],
+    },
+]

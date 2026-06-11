@@ -1,0 +1,47 @@
+extend schema
+  @link(
+    url: "https://specs.apollo.dev/connect/v0.5"
+    import: ["@connect", "@source", "@mapping"]
+  )
+  @source(name: "api", http: { baseURL: "http://127.0.0.1" })
+
+type Query {
+  nodeA(id: ID!): NodeA
+    @connect(
+      source: "api"
+      http: { GET: "/a/{$args.id}" }
+      selection: "...NodeA"
+    )
+  nodeB(id: ID!): NodeB
+    @connect(
+      source: "api"
+      http: { GET: "/b/{$args.id}" }
+      selection: "...NodeB"
+    )
+}
+
+type NodeA
+  @mapping(
+    selection: """
+      id
+      child {
+        ...NodeA
+      }
+    """
+  ) {
+  id: ID!
+  child: NodeA
+}
+
+type NodeB
+  @mapping(
+    selection: """
+      id
+      child {
+        ...NodeB
+      }
+    """
+  ) {
+  id: ID!
+  child: NodeB
+}

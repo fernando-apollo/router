@@ -1,0 +1,14 @@
+---
+source: apollo-federation/src/connectors/validation/mod.rs
+expression: result.errors
+input_file: apollo-federation/src/connectors/validation/test_data/mapping_spread_reserved_arg.graphql
+---
+[
+    Message {
+        code: InvalidSelection,
+        message: "Spread argument name `args` conflicts with reserved runtime variable `$args`.",
+        locations: [
+            13:18..13:36,
+        ],
+    },
+]
