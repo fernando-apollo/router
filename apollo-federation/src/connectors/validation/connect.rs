@@ -109,6 +109,13 @@ pub(super) fn fields_seen_by_all_connects(
             messages.push(message);
             continue;
         }
+        // Expand spreads in the request `body` too (mirrors the runtime path in
+        // `HttpJsonTransport::from_directive`). The other HTTP selection args
+        // reject spreads at parse time.
+        if let Err(message) = connect.expand_http_body(&registry, schema) {
+            messages.push(message);
+            continue;
+        }
         match connect.type_check() {
             Ok(seen_fields_for_connect) => {
                 seen_fields.extend(
@@ -349,6 +356,34 @@ impl<'schema> Connect<'schema> {
             schema,
             id,
         })
+    }
+
+    /// Expand `...TypeName` spreads in the request `body` before type checking,
+    /// mirroring the runtime expansion in `HttpJsonTransport::from_directive`.
+    /// Must run after the registry is built (see the call site below) and before
+    /// [`Self::type_check`], so type checking observes the expanded body fields.
+    /// Other HTTP selection arguments (path/query params) reject spreads at parse
+    /// time via `parse_mapping_argument(allow_spreads = false)`.
+    fn expand_http_body(
+        &mut self,
+        registry: &MappingRegistry,
+        schema: &SchemaInfo,
+    ) -> Result<(), Message> {
+        if let Some(http) = self.http.as_mut()
+            && let Err(err) = http.expand_body(registry)
+        {
+            return Err(Message {
+                code: Code::InvalidBody,
+                message: mapping_error_message(&err),
+                locations: self
+                    .coordinate
+                    .directive
+                    .line_column_range(&schema.sources)
+                    .into_iter()
+                    .collect(),
+            });
+        }
+        Ok(())
     }
 
     fn type_check(self) -> Result<Vec<ResolvedField>, Vec<Message>> {

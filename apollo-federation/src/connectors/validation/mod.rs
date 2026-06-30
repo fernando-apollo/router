@@ -345,4 +345,89 @@ mod test_validate_source {
             });
         });
     }
+
+    /// Validate a single `@connect` on a v0.5 schema and return its error messages.
+    fn validate_connect_v05(connect_inner: &str) -> Vec<String> {
+        let schema = format!(
+            "extend schema @link(url: \"https://specs.apollo.dev/connect/v0.5\", import: [\"@connect\"])\n\
+             type Query {{ f: String @connect({connect_inner}) }}",
+        );
+        validate(schema, "test.graphql")
+            .errors
+            .into_iter()
+            .map(|m| m.message)
+            .collect()
+    }
+
+    #[test]
+    fn mapping_spread_rejected_outside_selection_and_body() {
+        // Spreads (`...Type`) are only expanded for the response `selection` and
+        // the request `body`. In every other selection-bearing argument they must
+        // be rejected at parse time — otherwise they parse, escape validation, and
+        // hit the unexpanded-spread guard at runtime. All of these flow through one
+        // choke point: `parse_mapping_argument(allow_spreads = false)`.
+        const REJECT: &str = "not supported in this argument";
+
+        // request path / queryParams (parsed via the shared UrlProperties parser,
+        // which also covers the @source side)
+        let path = validate_connect_v05(r#"http: { GET: "/", path: "...User" }, selection: "$""#);
+        assert!(
+            path.iter().any(|m| m.contains(REJECT)),
+            "spread in `path` must be rejected: {path:?}"
+        );
+
+        let query =
+            validate_connect_v05(r#"http: { GET: "/", queryParams: "...User" }, selection: "$""#);
+        assert!(
+            query.iter().any(|m| m.contains(REJECT)),
+            "spread in `queryParams` must be rejected: {query:?}"
+        );
+
+        // error message / extensions
+        let message = validate_connect_v05(
+            r#"http: { GET: "/" }, errors: { message: "...User", extensions: "code: error.code" }, selection: "$""#,
+        );
+        assert!(
+            message.iter().any(|m| m.contains(REJECT)),
+            "spread in errors `message` must be rejected: {message:?}"
+        );
+
+        let extensions = validate_connect_v05(
+            r#"http: { GET: "/" }, errors: { message: "error.message", extensions: "...User" }, selection: "$""#,
+        );
+        assert!(
+            extensions.iter().any(|m| m.contains(REJECT)),
+            "spread in errors `extensions` must be rejected: {extensions:?}"
+        );
+
+        // isSuccess
+        let is_success =
+            validate_connect_v05(r#"http: { GET: "/" }, isSuccess: "...User", selection: "$""#);
+        assert!(
+            is_success.iter().any(|m| m.contains(REJECT)),
+            "spread in `isSuccess` must be rejected: {is_success:?}"
+        );
+    }
+
+    #[test]
+    fn mapping_spread_in_body_is_allowed_and_expanded() {
+        // `body` is the one request-side argument whose spreads ARE expanded
+        // (mirroring the runtime path). A spread in `body` must NOT hit the
+        // "not supported" reject. Routing it at a *missing* mapping proves
+        // `expand_selection` actually ran on the body (otherwise the spread would
+        // either be rejected or pass through unexpanded).
+        const REJECT: &str = "not supported in this argument";
+
+        let errs = validate_connect_v05(
+            r#"http: { POST: "http://example.com", body: "...NoSuchMapping" }, selection: "$""#,
+        );
+        assert!(
+            !errs.iter().any(|m| m.contains(REJECT)),
+            "spread in `body` must not be rejected as unsupported: {errs:?}"
+        );
+        assert!(
+            errs.iter().any(|m| m.contains("Unknown mapping reference")),
+            "body spread must be expanded (unknown reference proves it ran): {errs:?}"
+        );
+    }
 }

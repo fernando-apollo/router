@@ -237,7 +237,9 @@ impl Connector {
         let source_http = source.map(|s| &s.http);
         let transport = connect
             .http
-            .map(|connect_http| HttpJsonTransport::from_directive(connect_http, source_http, spec))
+            .map(|connect_http| {
+                HttpJsonTransport::from_directive(connect_http, source_http, spec, mapping_registry)
+            })
             .transpose()?;
 
         // Get our batch and error settings

@@ -10,6 +10,28 @@ use std::collections::HashSet;
 /// This is intentionally conservative - typical use cases have 1-3 levels of nesting.
 const MAX_EXPANSION_DEPTH: usize = 32;
 
+/// Maximum total number of `expand_*` calls while expanding a single selection.
+///
+/// `MAX_EXPANSION_DEPTH` bounds *nesting* depth but not total work: sibling spreads
+/// re-expand independently (the cycle set is cleared after each), so a fan-out schema
+/// (`...L1 ...L1` at each level) blows up exponentially into a "billion laughs"-style
+/// expansion. This cap bounds total work regardless of fan-out shape. It is generous for
+/// legitimate mappings — each AST node costs a handful of `expand_*` calls, so 10_000
+/// still permits thousands of real fields.
+const MAX_EXPANSION_NODES: usize = 10_000;
+
+/// Count one expansion step, rejecting once the total exceeds [`MAX_EXPANSION_NODES`].
+fn count_expansion_node(node_count: &mut usize) -> Result<(), FederationError> {
+    *node_count += 1;
+    if *node_count > MAX_EXPANSION_NODES {
+        return Err(FederationError::internal(format!(
+            "Mapping expansion exceeded the maximum of {MAX_EXPANSION_NODES} nodes. \
+             This may indicate too many spreads or an overly complex mapping chain."
+        )));
+    }
+    Ok(())
+}
+
 use apollo_compiler::Name;
 use apollo_compiler::Schema;
 use indexmap::IndexMap;
@@ -78,7 +100,7 @@ impl MappingRegistry {
         let mut registry = Self::new();
 
         // Extract all @mapping directive arguments
-        let mapping_args = extract_mapping_directive_arguments(schema, &directive_name)?;
+        let mapping_args = extract_mapping_directive_arguments(schema, &directive_name, spec)?;
 
         for args in mapping_args {
             let definition = Self::build_mapping_definition(&args, spec)?;
@@ -210,8 +232,14 @@ impl MappingRegistry {
     ) -> Result<JSONSelection, FederationError> {
         let mut expanding: HashSet<String> = HashSet::new();
         let no_subs = HashMap::new();
-        let expanded_inner =
-            self.expand_top_level(&selection.inner, &mut expanding, 0, &no_subs)?;
+        let mut node_count = 0usize;
+        let expanded_inner = self.expand_top_level(
+            &selection.inner,
+            &mut expanding,
+            0,
+            &no_subs,
+            &mut node_count,
+        )?;
 
         Ok(JSONSelection {
             inner: expanded_inner,
@@ -267,7 +295,8 @@ impl MappingRegistry {
             }
 
             if !parameters.contains(name) {
-                let available: Vec<_> = parameters.iter().map(|s| s.as_str()).collect();
+                let mut available: Vec<_> = parameters.iter().map(|s| s.as_str()).collect();
+                available.sort_unstable();
                 return Err(FederationError::internal(format!(
                     "Spread `...{mapping_name}({name}: ...)` passes unknown argument `{name}`. \
                      Available parameters: {}",
@@ -331,7 +360,9 @@ impl MappingRegistry {
         expanding: &mut HashSet<String>,
         depth: usize,
         substitutions: &HashMap<String, LitExpr>,
+        node_count: &mut usize,
     ) -> Result<TopLevelSelection, FederationError> {
+        count_expansion_node(node_count)?;
         if depth > MAX_EXPANSION_DEPTH {
             return Err(FederationError::internal(format!(
                 "Mapping expansion exceeded maximum depth of {}. \
@@ -342,7 +373,8 @@ impl MappingRegistry {
 
         match top_level {
             TopLevelSelection::Named(sub) => {
-                let expanded = self.expand_sub_selection(sub, expanding, depth, substitutions)?;
+                let expanded =
+                    self.expand_sub_selection(sub, expanding, depth, substitutions, node_count)?;
                 if let [only] = expanded.selections.as_slice()
                     && (only.is_anonymous() || matches!(only.prefix, NamingPrefix::Spread(None)))
                 {
@@ -352,8 +384,13 @@ impl MappingRegistry {
             }
             TopLevelSelection::Value(lit) => {
                 if let LitExpr::Path(path) = lit.as_ref() {
-                    let expanded =
-                        self.expand_path_selection(path, expanding, depth, substitutions)?;
+                    let expanded = self.expand_path_selection(
+                        path,
+                        expanding,
+                        depth,
+                        substitutions,
+                        node_count,
+                    )?;
                     let range = expanded.range();
                     Ok(TopLevelSelection::Value(WithRange::new(
                         LitExpr::Path(expanded),
@@ -373,7 +410,9 @@ impl MappingRegistry {
         expanding: &mut HashSet<String>,
         depth: usize,
         substitutions: &HashMap<String, LitExpr>,
+        node_count: &mut usize,
     ) -> Result<SubSelection, FederationError> {
+        count_expansion_node(node_count)?;
         let mut new_selections = Vec::new();
 
         for named in &sub.selections {
@@ -415,15 +454,17 @@ impl MappingRegistry {
 
                         match &mapping.selection {
                             TopLevelSelection::Named(sub) => {
-                                let result =
-                                    self.expand_sub_selection(sub, expanding, next_depth, &subs);
+                                let result = self.expand_sub_selection(
+                                    sub, expanding, next_depth, &subs, node_count,
+                                );
                                 expanding.remove(type_name);
                                 new_selections.extend(result?.selections);
                             }
                             TopLevelSelection::Value(lit) => {
                                 if let LitExpr::Path(path) = lit.as_ref() {
-                                    let result = self
-                                        .expand_path_selection(path, expanding, next_depth, &subs);
+                                    let result = self.expand_path_selection(
+                                        path, expanding, next_depth, &subs, node_count,
+                                    );
                                     expanding.remove(type_name);
                                     let expanded_path = result?;
 
@@ -459,8 +500,13 @@ impl MappingRegistry {
                 }
                 _ => {
                     // Recursively expand any nested selections
-                    let expanded_named =
-                        self.expand_named_selection(named, expanding, depth, substitutions)?;
+                    let expanded_named = self.expand_named_selection(
+                        named,
+                        expanding,
+                        depth,
+                        substitutions,
+                        node_count,
+                    )?;
                     new_selections.push(expanded_named);
                 }
             }
@@ -487,14 +533,22 @@ impl MappingRegistry {
         expanding: &mut HashSet<String>,
         depth: usize,
         substitutions: &HashMap<String, LitExpr>,
+        node_count: &mut usize,
     ) -> Result<NamedSelection, FederationError> {
+        count_expansion_node(node_count)?;
         let expanded_path = if let LitExpr::Path(path) = named.path.as_ref() {
-            let expanded = self.expand_path_selection(path, expanding, depth, substitutions)?;
+            let expanded =
+                self.expand_path_selection(path, expanding, depth, substitutions, node_count)?;
             let range = expanded.range();
             WithRange::new(LitExpr::Path(expanded), range)
         } else {
-            let expanded =
-                self.expand_lit_expr(named.path.as_ref(), expanding, depth, substitutions)?;
+            let expanded = self.expand_lit_expr(
+                named.path.as_ref(),
+                expanding,
+                depth,
+                substitutions,
+                node_count,
+            )?;
             WithRange::new(expanded, named.path.range())
         };
 
@@ -511,9 +565,16 @@ impl MappingRegistry {
         expanding: &mut HashSet<String>,
         depth: usize,
         substitutions: &HashMap<String, LitExpr>,
+        node_count: &mut usize,
     ) -> Result<PathSelection, FederationError> {
-        let expanded_path_list =
-            self.expand_path_list(path.path.as_ref(), expanding, depth, substitutions)?;
+        count_expansion_node(node_count)?;
+        let expanded_path_list = self.expand_path_list(
+            path.path.as_ref(),
+            expanding,
+            depth,
+            substitutions,
+            node_count,
+        )?;
 
         Ok(PathSelection {
             path: WithRange::new(expanded_path_list, path.path.range()),
@@ -528,15 +589,23 @@ impl MappingRegistry {
         expanding: &mut HashSet<String>,
         depth: usize,
         substitutions: &HashMap<String, LitExpr>,
+        node_count: &mut usize,
     ) -> Result<PathList, FederationError> {
+        count_expansion_node(node_count)?;
         match path_list {
             PathList::Selection(sub) => {
-                let expanded = self.expand_sub_selection(sub, expanding, depth, substitutions)?;
+                let expanded =
+                    self.expand_sub_selection(sub, expanding, depth, substitutions, node_count)?;
                 Ok(PathList::Selection(expanded))
             }
             PathList::Key(key, tail) => {
-                let expanded_tail =
-                    self.expand_path_list(tail.as_ref(), expanding, depth, substitutions)?;
+                let expanded_tail = self.expand_path_list(
+                    tail.as_ref(),
+                    expanding,
+                    depth,
+                    substitutions,
+                    node_count,
+                )?;
                 Ok(PathList::Key(
                     key.clone(),
                     WithRange::new(expanded_tail, tail.range()),
@@ -549,15 +618,25 @@ impl MappingRegistry {
                 {
                     // Substitute: replace the variable with the literal value.
                     // The tail is expanded with substitutions in case there's more.
-                    let expanded_tail =
-                        self.expand_path_list(tail.as_ref(), expanding, depth, substitutions)?;
+                    let expanded_tail = self.expand_path_list(
+                        tail.as_ref(),
+                        expanding,
+                        depth,
+                        substitutions,
+                        node_count,
+                    )?;
                     return Ok(PathList::Expr(
                         WithRange::new(replacement.clone(), var.range()),
                         WithRange::new(expanded_tail, tail.range()),
                     ));
                 }
-                let expanded_tail =
-                    self.expand_path_list(tail.as_ref(), expanding, depth, substitutions)?;
+                let expanded_tail = self.expand_path_list(
+                    tail.as_ref(),
+                    expanding,
+                    depth,
+                    substitutions,
+                    node_count,
+                )?;
                 Ok(PathList::Var(
                     var.clone(),
                     WithRange::new(expanded_tail, tail.range()),
@@ -576,6 +655,7 @@ impl MappingRegistry {
                                     expanding,
                                     depth,
                                     substitutions,
+                                    node_count,
                                 )?;
                                 Ok(WithRange::new(expanded_expr, arg.range()))
                             })
@@ -587,8 +667,13 @@ impl MappingRegistry {
                     }
                     other => other.clone(),
                 };
-                let expanded_tail =
-                    self.expand_path_list(tail.as_ref(), expanding, depth, substitutions)?;
+                let expanded_tail = self.expand_path_list(
+                    tail.as_ref(),
+                    expanding,
+                    depth,
+                    substitutions,
+                    node_count,
+                )?;
                 Ok(PathList::Method(
                     method.clone(),
                     expanded_args,
@@ -596,18 +681,33 @@ impl MappingRegistry {
                 ))
             }
             PathList::Expr(expr, tail) => {
-                let expanded_expr =
-                    self.expand_lit_expr(expr.as_ref(), expanding, depth, substitutions)?;
-                let expanded_tail =
-                    self.expand_path_list(tail.as_ref(), expanding, depth, substitutions)?;
+                let expanded_expr = self.expand_lit_expr(
+                    expr.as_ref(),
+                    expanding,
+                    depth,
+                    substitutions,
+                    node_count,
+                )?;
+                let expanded_tail = self.expand_path_list(
+                    tail.as_ref(),
+                    expanding,
+                    depth,
+                    substitutions,
+                    node_count,
+                )?;
                 Ok(PathList::Expr(
                     WithRange::new(expanded_expr, expr.range()),
                     WithRange::new(expanded_tail, tail.range()),
                 ))
             }
             PathList::Question(tail) => {
-                let expanded_tail =
-                    self.expand_path_list(tail.as_ref(), expanding, depth, substitutions)?;
+                let expanded_tail = self.expand_path_list(
+                    tail.as_ref(),
+                    expanding,
+                    depth,
+                    substitutions,
+                    node_count,
+                )?;
                 Ok(PathList::Question(WithRange::new(
                     expanded_tail,
                     tail.range(),
@@ -625,20 +725,28 @@ impl MappingRegistry {
         expanding: &mut HashSet<String>,
         depth: usize,
         substitutions: &HashMap<String, LitExpr>,
+        node_count: &mut usize,
     ) -> Result<LitExpr, FederationError> {
+        count_expansion_node(node_count)?;
         match lit_expr {
             LitExpr::String(_) | LitExpr::Number(_) | LitExpr::Bool(_) | LitExpr::Null => {
                 Ok(lit_expr.clone())
             }
             LitExpr::Object(sub) => {
-                let expanded = self.expand_sub_selection(sub, expanding, depth, substitutions)?;
+                let expanded =
+                    self.expand_sub_selection(sub, expanding, depth, substitutions, node_count)?;
                 Ok(LitExpr::Object(expanded))
             }
             LitExpr::LegacyObject(obj) => {
                 let mut expanded_obj = apollo_compiler::collections::IndexMap::default();
                 for (key, value) in obj {
-                    let expanded_value =
-                        self.expand_lit_expr(value.as_ref(), expanding, depth, substitutions)?;
+                    let expanded_value = self.expand_lit_expr(
+                        value.as_ref(),
+                        expanding,
+                        depth,
+                        substitutions,
+                        node_count,
+                    )?;
                     expanded_obj.insert(key.clone(), WithRange::new(expanded_value, value.range()));
                 }
                 Ok(LitExpr::LegacyObject(expanded_obj))
@@ -646,8 +754,13 @@ impl MappingRegistry {
             LitExpr::Array(arr) => {
                 let mut expanded_arr = Vec::with_capacity(arr.len());
                 for value in arr {
-                    let expanded_value =
-                        self.expand_lit_expr(value.as_ref(), expanding, depth, substitutions)?;
+                    let expanded_value = self.expand_lit_expr(
+                        value.as_ref(),
+                        expanding,
+                        depth,
+                        substitutions,
+                        node_count,
+                    )?;
                     expanded_arr.push(WithRange::new(expanded_value, value.range()));
                 }
                 Ok(LitExpr::Array(expanded_arr))
@@ -664,14 +777,24 @@ impl MappingRegistry {
                     return Ok(replacement.clone());
                 }
                 let expanded_path =
-                    self.expand_path_selection(path, expanding, depth, substitutions)?;
+                    self.expand_path_selection(path, expanding, depth, substitutions, node_count)?;
                 Ok(LitExpr::Path(expanded_path))
             }
             LitExpr::LitPath(literal, subpath) => {
-                let expanded_literal =
-                    self.expand_lit_expr(literal.as_ref(), expanding, depth, substitutions)?;
-                let expanded_subpath =
-                    self.expand_path_list(subpath.as_ref(), expanding, depth, substitutions)?;
+                let expanded_literal = self.expand_lit_expr(
+                    literal.as_ref(),
+                    expanding,
+                    depth,
+                    substitutions,
+                    node_count,
+                )?;
+                let expanded_subpath = self.expand_path_list(
+                    subpath.as_ref(),
+                    expanding,
+                    depth,
+                    substitutions,
+                    node_count,
+                )?;
                 Ok(LitExpr::LitPath(
                     WithRange::new(expanded_literal, literal.range()),
                     WithRange::new(expanded_subpath, subpath.range()),
@@ -680,8 +803,13 @@ impl MappingRegistry {
             LitExpr::OpChain(op, operands) => {
                 let mut expanded_operands = Vec::with_capacity(operands.len());
                 for operand in operands {
-                    let expanded_operand =
-                        self.expand_lit_expr(operand.as_ref(), expanding, depth, substitutions)?;
+                    let expanded_operand = self.expand_lit_expr(
+                        operand.as_ref(),
+                        expanding,
+                        depth,
+                        substitutions,
+                        node_count,
+                    )?;
                     expanded_operands.push(WithRange::new(expanded_operand, operand.range()));
                 }
                 Ok(LitExpr::OpChain(op.clone(), expanded_operands))
@@ -1138,6 +1266,57 @@ mod tests {
         assert!(pretty.contains("name"));
         assert!(pretty.contains("email"));
         assert!(pretty.contains("phone"));
+    }
+
+    #[test]
+    fn test_fanout_spread_exceeds_node_limit() {
+        // "Billion laughs" shape: each level fans out to two spreads of the next
+        // level, so depth N yields ~2^N leaf expansions. With 16 levels that is
+        // ~65k leaves, far past MAX_EXPANSION_NODES (10_000). Without the node
+        // cap this would blow up exponentially; the guard must reject it quickly
+        // rather than hang or OOM. (MAX_EXPANSION_DEPTH alone does NOT catch this
+        // — sibling spreads re-expand independently, so nesting depth stays low.)
+        let name_at = |i: usize| Name::new(&format!("L{i}")).unwrap();
+        let mut registry = MappingRegistry::new();
+        let levels = 16;
+        for i in 0..levels {
+            let this_name = name_at(i);
+            let next_name = format!("L{}", i + 1);
+            let selection_str = format!("...{next_name} ...{next_name}");
+            let parsed = JSONSelection::parse_with_spec(&selection_str, ConnectSpec::V0_5).unwrap();
+            registry.mappings.insert(
+                this_name.clone(),
+                MappingDefinition {
+                    selection: parsed.inner,
+                    source_type: this_name,
+                    parameters: HashSet::new(),
+                },
+            );
+        }
+        // Leaf mapping: terminal fields, no further spreads.
+        let leaf_name = name_at(levels);
+        let leaf = JSONSelection::parse_with_spec("a b", ConnectSpec::V0_5).unwrap();
+        registry.mappings.insert(
+            leaf_name.clone(),
+            MappingDefinition {
+                selection: leaf.inner,
+                source_type: leaf_name,
+                parameters: HashSet::new(),
+            },
+        );
+
+        let selection = JSONSelection::parse_with_spec("...L0", ConnectSpec::V0_5).unwrap();
+        let result = registry.expand_selection(&selection);
+
+        assert!(
+            result.is_err(),
+            "fan-out expansion must be rejected by the node cap"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("maximum") && err.contains("nodes"),
+            "error should mention the node cap, got: {err}"
+        );
     }
 
     #[test]

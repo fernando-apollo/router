@@ -145,6 +145,7 @@ impl<'schema> ErrorsMessage<'schema> {
             coordinate.clone(),
             Code::InvalidErrorsMessage,
             schema,
+            false,
         )?;
 
         Ok(Some(Self {
@@ -257,6 +258,7 @@ impl<'schema> ErrorsExtensions<'schema> {
             coordinate.clone(),
             Code::InvalidErrorsMessage,
             schema,
+            false,
         )?;
 
         Ok(Some(Self {
@@ -373,8 +375,13 @@ impl<'schema> IsSuccessArgument<'schema> {
             return Ok(None);
         };
 
-        let MappingArgument { expression, node } =
-            parse_mapping_argument(value, coordinate.clone(), Code::InvalidIsSuccess, schema)?;
+        let MappingArgument { expression, node } = parse_mapping_argument(
+            value,
+            coordinate.clone(),
+            Code::InvalidIsSuccess,
+            schema,
+            false,
+        )?;
 
         Ok(Some(Self {
             expression,

@@ -60,8 +60,13 @@ impl<'schema> UrlProperties<'schema> {
                     directive: directive.clone(),
                     property,
                 };
-                let mapping =
-                    parse_mapping_argument(value, &coordinate, Code::InvalidUrlProperty, schema)?;
+                let mapping = parse_mapping_argument(
+                    value,
+                    &coordinate,
+                    Code::InvalidUrlProperty,
+                    schema,
+                    false,
+                )?;
                 Ok(Property {
                     coordinate,
                     mapping,

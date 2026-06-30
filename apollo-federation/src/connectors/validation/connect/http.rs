@@ -10,6 +10,7 @@ use multi_try::MultiTry;
 use shape::Shape;
 
 use crate::connectors::HTTPMethod;
+use crate::connectors::MappingRegistry;
 use crate::connectors::Namespace;
 use crate::connectors::SourceName;
 use crate::connectors::spec::connect::CONNECT_BODY_ARGUMENT_NAME;
@@ -34,6 +35,7 @@ use crate::connectors::validation::graphql::subslice_location;
 use crate::connectors::validation::http::UrlProperties;
 use crate::connectors::validation::http::headers::Headers;
 use crate::connectors::validation::http::url::validate_url_scheme;
+use crate::error::FederationError;
 
 /// A valid, parsed (but not type-checked) `@connect(http:)`.
 ///
@@ -100,6 +102,19 @@ impl<'schema> Http<'schema> {
             })
     }
 
+    /// Expand `...TypeName` spreads in the request `body`, if any, using the
+    /// `@mapping` registry. Must run before [`Self::type_check`] so type
+    /// checking sees the expanded fields.
+    pub(super) fn expand_body(
+        &mut self,
+        registry: &MappingRegistry,
+    ) -> Result<(), FederationError> {
+        if let Some(body) = self.body.as_mut() {
+            body.expand(registry)?;
+        }
+        Ok(())
+    }
+
     /// Type-check the `@connect(http:)` directive.
     ///
     /// Does things like ensuring that every accessed variable actually exists and that expressions
@@ -164,12 +179,24 @@ impl<'schema> Body<'schema> {
         };
         let coordinate = BodyCoordinate { connect };
 
-        let mapping = parse_mapping_argument(value, coordinate, Code::InvalidBody, schema)?;
+        let mapping = parse_mapping_argument(value, coordinate, Code::InvalidBody, schema, true)?;
 
         Ok(Some(Self {
             mapping,
             coordinate,
         }))
+    }
+
+    /// Expand `...TypeName` spreads in the body selection using the `@mapping`
+    /// registry, mirroring the runtime expansion in
+    /// `HttpJsonTransport::from_directive`. The response `selection` is a
+    /// different type (`Selection`, expanded via `Selection::expand_mappings`),
+    /// so this is not a reuse of that path. Propagates the raw registry error;
+    /// the caller maps it to a validation `Message`.
+    fn expand(&mut self, registry: &MappingRegistry) -> Result<(), FederationError> {
+        let expanded = registry.expand_selection(&self.mapping.expression.expression)?;
+        self.mapping.expression.expression = expanded;
+        Ok(())
     }
 
     /// Check that the selection of the body matches the inputs at this location.

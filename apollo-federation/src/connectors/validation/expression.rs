@@ -654,6 +654,7 @@ pub(crate) fn parse_mapping_argument(
     coordinate: impl Display,
     code: Code,
     schema: &SchemaInfo,
+    allow_spreads: bool,
 ) -> Result<MappingArgument, Message> {
     let Some(string) = node.as_str() else {
         return Err(Message {
@@ -678,6 +679,23 @@ pub(crate) fn parse_mapping_argument(
             });
         }
     };
+
+    // `...TypeName` spreads are only expanded for the response `selection` and
+    // `body`. Elsewhere (request path/query params, error selections) a spread
+    // would parse, escape validation, and hit the unexpanded-spread guard at
+    // runtime — reject it here, at the shared parse choke point.
+    if !allow_spreads && selection.contains_spread() {
+        return Err(Message {
+            code,
+            message: format!(
+                "{coordinate}: spreads (`...Type`) are not supported in this argument."
+            ),
+            locations: node
+                .line_column_range(&schema.sources)
+                .into_iter()
+                .collect(),
+        });
+    }
 
     if selection.is_empty() {
         return Err(Message {

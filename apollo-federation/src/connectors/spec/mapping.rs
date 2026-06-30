@@ -11,7 +11,6 @@ use apollo_compiler::ast::Directive;
 use apollo_compiler::name;
 
 use crate::connectors::ConnectSpec;
-use crate::connectors::spec::connect_spec_from_schema;
 use crate::error::FederationError;
 
 /// The name of the `@mapping` directive in the spec
@@ -19,9 +18,6 @@ pub(crate) const MAPPING_DIRECTIVE_NAME_IN_SPEC: Name = name!("mapping");
 
 /// The `as` argument for aliasing the mapping name
 pub(super) const MAPPING_AS_ARGUMENT_NAME: Name = name!("as");
-
-/// Default connect spec to use when none is found
-pub(super) const DEFAULT_CONNECT_SPEC: ConnectSpec = ConnectSpec::V0_5;
 
 /// Arguments extracted from a `@mapping` directive
 #[derive(Debug, Clone)]
@@ -40,13 +36,17 @@ pub(crate) struct MappingDirectiveArguments {
     pub field_names: Vec<Name>,
 }
 
-/// Extract all `@mapping` directive arguments from the schema
+/// Extract all `@mapping` directive arguments from the schema.
+///
+/// `connect_spec` must already be resolved from the `ConnectLink` by the caller
+/// (`MappingRegistry::from_schema`); we take it as a parameter rather than
+/// re-resolving so there is a single source of truth for the spec version and no
+/// fail-open fallback.
 pub(crate) fn extract_mapping_directive_arguments(
     schema: &Schema,
     directive_name: &Name,
+    connect_spec: ConnectSpec,
 ) -> Result<Vec<MappingDirectiveArguments>, FederationError> {
-    let connect_spec = connect_spec_from_schema(schema).unwrap_or(DEFAULT_CONNECT_SPEC);
-
     let mut results = Vec::new();
     let mut seen_aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -254,7 +254,9 @@ mod tests {
         )
         .unwrap();
 
-        let mappings = extract_mapping_directive_arguments(&schema, &name!(mapping)).unwrap();
+        let mappings =
+            extract_mapping_directive_arguments(&schema, &name!(mapping), ConnectSpec::V0_5)
+                .unwrap();
         assert_eq!(mappings.len(), 1);
 
         let mapping = &mappings[0];
@@ -293,7 +295,9 @@ mod tests {
         )
         .unwrap();
 
-        let mappings = extract_mapping_directive_arguments(&schema, &name!(mapping)).unwrap();
+        let mappings =
+            extract_mapping_directive_arguments(&schema, &name!(mapping), ConnectSpec::V0_5)
+                .unwrap();
         assert_eq!(mappings.len(), 1);
 
         let mapping = &mappings[0];
@@ -330,7 +334,9 @@ mod tests {
         )
         .unwrap();
 
-        let mappings = extract_mapping_directive_arguments(&schema, &name!(mapping)).unwrap();
+        let mappings =
+            extract_mapping_directive_arguments(&schema, &name!(mapping), ConnectSpec::V0_5)
+                .unwrap();
         assert_eq!(mappings.len(), 1);
 
         let mapping = &mappings[0];
@@ -363,7 +369,9 @@ mod tests {
         )
         .unwrap();
 
-        let mappings = extract_mapping_directive_arguments(&schema, &name!(mapping)).unwrap();
+        let mappings =
+            extract_mapping_directive_arguments(&schema, &name!(mapping), ConnectSpec::V0_5)
+                .unwrap();
         assert_eq!(mappings.len(), 2);
 
         // Find the auto-map one
@@ -406,7 +414,9 @@ mod tests {
         )
         .unwrap();
 
-        let mappings = extract_mapping_directive_arguments(&schema, &name!(mapping)).unwrap();
+        let mappings =
+            extract_mapping_directive_arguments(&schema, &name!(mapping), ConnectSpec::V0_5)
+                .unwrap();
         assert_eq!(mappings.len(), 1);
         assert_eq!(mappings[0].type_name, name!(Node));
     }
@@ -427,7 +437,8 @@ mod tests {
         )
         .unwrap();
 
-        let result = extract_mapping_directive_arguments(&schema, &name!(mapping));
+        let result =
+            extract_mapping_directive_arguments(&schema, &name!(mapping), ConnectSpec::V0_4);
         // Should error because @mapping requires v0.5+
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -452,7 +463,8 @@ mod tests {
         )
         .unwrap();
 
-        let result = extract_mapping_directive_arguments(&schema, &name!(mapping));
+        let result =
+            extract_mapping_directive_arguments(&schema, &name!(mapping), ConnectSpec::V0_5);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Duplicate @mapping alias"));
@@ -475,7 +487,8 @@ mod tests {
         )
         .unwrap();
 
-        let result = extract_mapping_directive_arguments(&schema, &name!(mapping));
+        let result =
+            extract_mapping_directive_arguments(&schema, &name!(mapping), ConnectSpec::V0_5);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("input type"));
@@ -498,7 +511,8 @@ mod tests {
         )
         .unwrap();
 
-        let result = extract_mapping_directive_arguments(&schema, &name!(mapping));
+        let result =
+            extract_mapping_directive_arguments(&schema, &name!(mapping), ConnectSpec::V0_5);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("enum"));
@@ -523,7 +537,8 @@ mod tests {
         )
         .unwrap();
 
-        let result = extract_mapping_directive_arguments(&schema, &name!(mapping));
+        let result =
+            extract_mapping_directive_arguments(&schema, &name!(mapping), ConnectSpec::V0_5);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("union"));
@@ -549,7 +564,8 @@ mod tests {
         )
         .unwrap();
 
-        let result = extract_mapping_directive_arguments(&schema, &name!(mapping));
+        let result =
+            extract_mapping_directive_arguments(&schema, &name!(mapping), ConnectSpec::V0_5);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("basicUser"));
@@ -575,7 +591,9 @@ mod tests {
         )
         .unwrap();
 
-        let mappings = extract_mapping_directive_arguments(&schema, &name!(mapping)).unwrap();
+        let mappings =
+            extract_mapping_directive_arguments(&schema, &name!(mapping), ConnectSpec::V0_5)
+                .unwrap();
         assert_eq!(mappings[0].alias, name!(BasicUser));
     }
 }

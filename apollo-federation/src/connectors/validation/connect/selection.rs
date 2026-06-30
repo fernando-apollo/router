@@ -83,6 +83,9 @@ impl<'schema> Selection<'schema> {
             coordinate,
             Code::InvalidSelection,
             schema,
+            // The response `selection` is the one argument whose spreads are
+            // expanded (by `Selection::expand_mappings`); allow them here.
+            true,
         )?;
 
         Ok(Self {

@@ -19,6 +19,7 @@ use super::ProblemLocation;
 use crate::connectors::ApplyToError;
 use crate::connectors::ConnectSpec;
 use crate::connectors::JSONSelection;
+use crate::connectors::MappingRegistry;
 use crate::connectors::Namespace;
 use crate::connectors::PathSelection;
 use crate::connectors::StringTemplate;
@@ -50,6 +51,7 @@ impl HttpJsonTransport {
         http: ConnectHTTPArguments,
         source: Option<&SourceHTTPArguments>,
         spec: ConnectSpec,
+        mapping_registry: &MappingRegistry,
     ) -> Result<Self, FederationError> {
         let (method, connect_url) = if let Some(url) = &http.get {
             (HTTPMethod::Get, url)
@@ -75,6 +77,16 @@ impl HttpJsonTransport {
             }
         }
 
+        // Expand any `...TypeName` spreads in the request body using the
+        // @mapping registry, mirroring the response-selection expansion in
+        // `Connector::from_directives`. The other transport JSONSelection
+        // fields (source/connect path & query params) are rejected at validation
+        // time if they contain spreads, so they need no expansion here.
+        let body = match http.body {
+            Some(body) => Some(mapping_registry.expand_selection(&body)?),
+            None => None,
+        };
+
         Ok(Self {
             source_template: source.map(|source| source.base_url.template.clone()),
             connect_template: StringTemplate::parse_with_spec(connect_url, spec).map_err(
@@ -87,7 +99,7 @@ impl HttpJsonTransport {
             )?,
             method,
             headers,
-            body: http.body,
+            body,
             source_path: source.and_then(|s| s.path.clone()),
             source_query_params: source.and_then(|s| s.query_params.clone()),
             connect_path: http.path,

@@ -31,6 +31,10 @@ pub(crate) struct SpanExtra {
     pub(super) errors: Vec<(String, usize)>,
     /// Names of local variables currently bound by the `->as($var)` method.
     pub(super) local_vars: Vec<String>,
+    /// Running parser depth: path steps plus subselection braces so far. Capped
+    /// at `MAX_PARSE_DEPTH` to bound stack usage. Carried in the span like
+    /// `local_vars`.
+    pub(super) recursion_depth: usize,
 }
 
 #[cfg(test)]
@@ -41,6 +45,7 @@ pub(crate) fn new_span(input: &str) -> Span<'_> {
             spec: ConnectSpec::latest(),
             local_vars: Vec::new(),
             errors: Vec::new(),
+            recursion_depth: 0,
         },
     )
 }
@@ -52,6 +57,7 @@ pub(crate) fn new_span_with_spec(input: &str, spec: ConnectSpec) -> Span<'_> {
             spec,
             local_vars: Vec::new(),
             errors: Vec::new(),
+            recursion_depth: 0,
         },
     )
 }

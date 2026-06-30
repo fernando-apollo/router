@@ -51,10 +51,12 @@ use crate::connectors::variable::VariableReference;
 // here, if error messages can be improved with additional context.
 pub(super) type ParseResult<'a, T> = IResult<Span<'a>, T>;
 
-/// Maximum recursion depth for PathList parsing. Prevents stack overflow on
-/// pathologically deep inputs like `$.a.b.c.d...` repeated hundreds of times.
-/// This limit is well above any reasonable real-world nesting level while
-/// staying safely within typical thread stack sizes.
+/// Maximum parser recursion depth. Prevents stack overflow on deeply nested
+/// inputs. Counts path steps and subselection braces together, since both pile
+/// up on the stack at once (`a.a…{ a.a…{ … } }`). Kept conservative (64) because
+/// the nom combinator frames are several KB each — a 2 MB worker stack overflows
+/// around ~280 frames, so this leaves a wide margin while still admitting any
+/// realistic mapping (paths ≪ 64 keys, nesting ≪ 64 braces).
 const MAX_PARSE_DEPTH: usize = 64;
 
 // Generates a non-fatal error with the given suffix and message, allowing the
@@ -221,6 +223,17 @@ impl JSONSelection {
     /// the `Value` arm and then inspect the inner `LitExpr` for `Path`.
     pub(crate) fn top_level(&self) -> &TopLevelSelection {
         &self.inner
+    }
+
+    /// Returns true if this selection contains any `...TypeName` spread
+    /// (`NamingPrefix::Spread` / `SpreadNamed`) at any depth. Used to reject
+    /// spreads in arguments that don't support them (e.g. request-side
+    /// `@connect` arguments) at parse time, before expansion.
+    pub(crate) fn contains_spread(&self) -> bool {
+        match &self.inner {
+            TopLevelSelection::Named(sub) => subselection_contains_spread(sub),
+            TopLevelSelection::Value(lit) => lit_expr_contains_spread(lit.as_ref()),
+        }
     }
 
     pub fn empty() -> Self {
@@ -1331,6 +1344,10 @@ impl PathList {
     }
 
     pub(super) fn parse(input: Span) -> ParseResult<WithRange<Self>> {
+        // `depth` resets to 0 per path chain (it gates start-of-path syntax). The
+        // cumulative stack budget lives separately in `recursion_depth`, which we
+        // restore on the remainder below.
+        let base_depth = input.extra.recursion_depth;
         match Self::parse_with_depth(input.clone(), 0) {
             Ok((_, parsed)) if matches!(*parsed, Self::Empty) => Err(nom_error_message(
                 input.clone(),
@@ -1344,6 +1361,15 @@ impl PathList {
                 // fall back to NamedGroupSelection.
                 "Path selection cannot be empty",
             )),
+            Ok((remainder, parsed)) => {
+                // Reset depth for whatever follows, so a trailing subselection
+                // doesn't over-count later sibling selections.
+                let remainder = remainder.map_extra(|extra| SpanExtra {
+                    recursion_depth: base_depth,
+                    ..extra
+                });
+                Ok((remainder, parsed))
+            }
             otherwise => otherwise,
         }
     }
@@ -1658,7 +1684,14 @@ impl PathList {
         // responsible for enforcing a trailing SubSelection in the
         // PathWithSubSelection case, since that requirement is checked by
         // NamedSelection::parse_path.
-        if let Ok((suffix, selection)) = SubSelection::parse(input.clone()) {
+        //
+        // Add this path's depth to the running total before descending, so a deep
+        // path inside deep nesting can't blow the stack.
+        let sub_input = input.clone().map_extra(|extra| SpanExtra {
+            recursion_depth: extra.recursion_depth + depth,
+            ..extra
+        });
+        if let Ok((suffix, selection)) = SubSelection::parse(sub_input) {
             let selection_range = selection.range();
             return Ok((
                 suffix,
@@ -1816,8 +1849,73 @@ impl Ranged for SubSelection {
     }
 }
 
+fn subselection_contains_spread(sub: &SubSelection) -> bool {
+    sub.selections.iter().any(named_selection_contains_spread)
+}
+
+fn named_selection_contains_spread(named: &NamedSelection) -> bool {
+    matches!(
+        &named.prefix,
+        NamingPrefix::Spread(_) | NamingPrefix::SpreadNamed { .. }
+    ) || lit_expr_contains_spread(named.path.as_ref())
+}
+
+fn path_selection_contains_spread(path: &PathSelection) -> bool {
+    path_list_contains_spread(path.path.as_ref())
+}
+
+fn path_list_contains_spread(path_list: &PathList) -> bool {
+    match path_list {
+        PathList::Selection(sub) => subselection_contains_spread(sub),
+        PathList::Key(_, tail) | PathList::Var(_, tail) => path_list_contains_spread(tail.as_ref()),
+        PathList::Method(_, args, tail) => {
+            args.as_ref().is_some_and(|a| {
+                a.args
+                    .iter()
+                    .any(|arg| lit_expr_contains_spread(arg.as_ref()))
+            }) || path_list_contains_spread(tail.as_ref())
+        }
+        PathList::Expr(expr, tail) => {
+            lit_expr_contains_spread(expr.as_ref()) || path_list_contains_spread(tail.as_ref())
+        }
+        PathList::Question(tail) => path_list_contains_spread(tail.as_ref()),
+        PathList::Empty => false,
+    }
+}
+
+fn lit_expr_contains_spread(lit: &LitExpr) -> bool {
+    match lit {
+        LitExpr::String(_) | LitExpr::Number(_) | LitExpr::Bool(_) | LitExpr::Null => false,
+        LitExpr::Object(sub) => subselection_contains_spread(sub),
+        LitExpr::LegacyObject(obj) => obj.values().any(|v| lit_expr_contains_spread(v.as_ref())),
+        LitExpr::Array(arr) => arr.iter().any(|v| lit_expr_contains_spread(v.as_ref())),
+        LitExpr::Path(path) => path_selection_contains_spread(path),
+        LitExpr::LitPath(literal, subpath) => {
+            lit_expr_contains_spread(literal.as_ref())
+                || path_list_contains_spread(subpath.as_ref())
+        }
+        LitExpr::OpChain(_, operands) => operands
+            .iter()
+            .any(|o| lit_expr_contains_spread(o.as_ref())),
+    }
+}
+
 impl SubSelection {
     pub(crate) fn parse(input: Span) -> ParseResult<Self> {
+        // Each brace level adds one to the running depth, so deep nesting like
+        // `a{a{a{…}}}` can't overflow the stack.
+        let depth = input.extra.recursion_depth;
+        if depth >= MAX_PARSE_DEPTH {
+            return Err(nom_fail_message(
+                input,
+                format!("selection nesting exceeds the maximum depth of {MAX_PARSE_DEPTH}"),
+            ));
+        }
+        // The body (after `{`) must see depth + 1 so nested braces are counted.
+        let body_input = input.map_extra(|extra| SpanExtra {
+            recursion_depth: depth + 1,
+            ..extra
+        });
         match (
             spaces_or_comments,
             ranged_span("{"),
@@ -1825,10 +1923,15 @@ impl SubSelection {
             spaces_or_comments,
             ranged_span("}"),
         )
-            .parse(input)
+            .parse(body_input)
         {
             Ok((remainder, (_, open_brace, sub, _, close_brace))) => {
                 let range = merge_ranges(open_brace.range(), close_brace.range());
+                // Reset depth after `}` so sibling subselections aren't over-counted.
+                let remainder = remainder.map_extra(|extra| SpanExtra {
+                    recursion_depth: depth,
+                    ..extra
+                });
                 Ok((
                     remainder,
                     Self {
@@ -3341,6 +3444,7 @@ mod tests {
                             spec,
                             errors: vec![(expected_message, expected_offset)],
                             local_vars: Vec::new(),
+                            recursion_depth: 0,
                         }
                     );
                 }
@@ -5202,6 +5306,49 @@ mod tests {
         assert!(
             result.is_ok(),
             "A 10-level deep path should parse successfully: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn parse_subselection_depth_500_returns_error() {
+        // 500 nested braces would overflow the stack; the depth cap must reject it.
+        let deep_braces = format!("a{}", "{a{}".repeat(500)) + &"}".repeat(500);
+        let result = JSONSelection::parse_with_spec(&deep_braces, ConnectSpec::V0_5);
+        assert!(
+            result.is_err(),
+            "500-level nested subselection should be rejected by the subselection depth limit"
+        );
+    }
+
+    #[test]
+    fn parse_deep_path_inside_deep_nesting_is_bounded() {
+        // A deep path at each of many nesting levels: a separate per-axis limit
+        // would let the two multiply, but the single running depth cap rejects it.
+        let level = "a".to_string() + &".a".repeat(40); // ~40-deep path per level
+        let mut input = String::new();
+        for _ in 0..40 {
+            input.push_str(&level);
+            input.push_str(" { ");
+        }
+        input.push_str("leaf");
+        input.push_str(&" }".repeat(40));
+        let result = JSONSelection::parse_with_spec(&input, ConnectSpec::V0_5);
+        assert!(
+            result.is_err(),
+            "deep path nested inside deep braces must be rejected by the cumulative depth cap"
+        );
+    }
+
+    #[test]
+    fn parse_subselection_depth_within_limit_succeeds() {
+        // A handful of nested braces is well under MAX_PARSE_DEPTH (64) and
+        // must still parse cleanly (the guard must not reject legitimate nesting).
+        let nested = "a { b { c { d { e } } } }";
+        let result = JSONSelection::parse_with_spec(nested, ConnectSpec::V0_5);
+        assert!(
+            result.is_ok(),
+            "modest subselection nesting should parse successfully: {:?}",
             result.unwrap_err()
         );
     }
