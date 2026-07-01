@@ -6,10 +6,18 @@ This document describes the `@mapping` directive for Apollo Connectors - enablin
 
 The `@mapping` directive allows defining field mappings once on a type and referencing them via `...TypeName` spread syntax in `@connect` selection strings.
 
+## Spec version
+
+`@mapping` requires Connect spec **v0.5 or later**. A schema that declares `@mapping`
+against v0.4 or earlier is rejected — the directive is neither injected into the schema
+nor processed. The resolved spec is threaded from the `ConnectLink` into
+`extract_mapping_directive_arguments`, so there is a single source of truth (no
+fail-open re-resolution).
+
 ## Syntax
 
 ```graphql
-directive @mapping(selection: String, as: String) repeatable on OBJECT
+directive @mapping(selection: String, as: String) repeatable on OBJECT | INTERFACE
 ```
 
 **Arguments:**
@@ -78,6 +86,28 @@ type Query {
   )
 }
 ```
+
+### Where `...Type` spreads are permitted
+
+Spreads are expanded in exactly two `@connect` arguments:
+
+| Argument | Spreads | Behavior |
+|----------|---------|----------|
+| `selection` (response) | expanded | Replaced with the mapping's fields before type-checking and at runtime. |
+| `http.body` (request) | expanded | Expanded on **both** the validation path (`Connect::expand_http_body`) and the runtime path (`HttpJsonTransport::from_directive`). |
+
+Every other selection-bearing argument **rejects** spreads at parse time, with
+`spreads (\`...Type\`) are not supported in this argument`:
+
+- `http.path`, `http.queryParams` (and the `@source` equivalents)
+- `errors.message`, `errors.extensions`
+- `isSuccess`
+
+Without this, a spread would parse, escape validation, and hit the unexpanded-spread
+guard at runtime (request failure / dropped data). All six selection arguments flow
+through one parse choke point (`parse_mapping_argument(allow_spreads)`), so the
+allow/reject decision lives in one place. Request-side spreads beyond `body` are
+intentionally undesigned for now and can be promoted to expansion later if needed.
 
 ## Parameterized Mappings
 
@@ -167,6 +197,22 @@ fn expand_sub_selection(&self, sub: &SubSelection, expanding: &mut HashSet<Strin
 }
 ```
 
+### Bounds and recursion
+
+Expansion is bounded two ways to keep a pathological schema (reachable from an
+untrusted subgraph at compose time) from hanging or OOMing:
+
+- `MAX_EXPANSION_DEPTH` (32): maximum spread **nesting** depth.
+- `MAX_EXPANSION_NODES` (10_000): maximum total `expand_*` calls, bounding **fan-out**
+  regardless of shape — a `...L1 ...L1` "billion laughs" schema that doubles at each
+  level cannot blow up exponentially. Depth alone does not catch this, since sibling
+  spreads re-expand independently.
+
+Circular mapping references are currently a hard error (`Circular reference detected`).
+Note: connectors are expected to gain **cyclic-reference support** in a future revision;
+when that lands, cycle rejection will be relaxed and `MAX_EXPANSION_NODES` becomes the
+bound on how far a cycle unfolds.
+
 ## Testing
 
 ```bash
@@ -192,6 +238,9 @@ cargo test -p apollo-federation test_expand_simple_spread
 | `uses a variable/path as argument value` | Non-literal arg (v1 restriction) |
 | `conflicts with reserved runtime variable` | Arg name matches a Namespace |
 | `must start with an uppercase ASCII letter` | `as:` value not SpreadNamed-compatible |
+| `Mapping expansion exceeded the maximum of N nodes` | Total expansion exceeds `MAX_EXPANSION_NODES` (fan-out / billion-laughs guard) |
+| `spreads (\`...Type\`) are not supported in this argument` | Spread used outside `selection` / `body` (e.g. `path`, `errors.message`) |
+| `requires connect spec v0.5 or later` | `@mapping` declared against Connect v0.4 or earlier |
 
 ## Diagrams
 
@@ -267,3 +316,19 @@ Transforming HTTP responses back to GraphQL data via JSONSelection mapping (appl
 |------|--------|
 | `expand/mod.rs` | Added to `directive_deny_list` |
 | `supergraph/mod.rs` | Added `test_join_directives_v0_5_mapping` |
+
+### Hardening: DoS bounds, body expansion, spec-gate cleanup
+
+Driven by a recall-biased review. Five fixes:
+
+1. **Expansion node cap** (`MAX_EXPANSION_NODES`) threaded through the `expand_*`
+   family — bounds total fan-out, killing "billion laughs"-style spread expansion.
+2. **Parser depth** (`SpanExtra::recursion_depth`) — bounds cumulative path+brace
+   nesting so a crafted `a.a…{ a.a…{ … } }` can't overflow the stack at compose time.
+3. **Request `body` expansion + spread rejection** — `...Type` now expands in
+   `http.body` (validation + runtime); rejected everywhere else via
+   `parse_mapping_argument(allow_spreads)`.
+4. **Spec-gate cleanup** — the resolved spec is threaded from `from_schema` into
+   `extract_mapping_directive_arguments`; removed the dead `unwrap_or` fallback and
+   the duplicate `DEFAULT_CONNECT_SPEC` constant.
+5. **Deterministic error ordering** — the "Available parameters" list is sorted.

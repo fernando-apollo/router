@@ -33,6 +33,21 @@ This keeps upstream's function signature stable while gating `@mapping` at the s
 
 Both gates are necessary. The spec-level gate prevents the directive from appearing in schemas that don't support it. The runtime gate catches any edge case where a `@mapping` directive is present but shouldn't be processed.
 
+### Post-merge cleanup (spec threading)
+
+The runtime gate above originally re-resolved the spec inside
+`extract_mapping_directive_arguments` via
+`connect_spec_from_schema(schema).unwrap_or(DEFAULT_CONNECT_SPEC)`. That fallback
+was dead code in practice (`MappingRegistry::from_schema` already guards on
+`ConnectLink::new`, which resolves the spec), and `DEFAULT_CONNECT_SPEC = V0_5` was a
+third copy divergent from `connect`/`source`'s `V0_3`.
+
+Cleanup: the resolved `spec` is now threaded from `from_schema` (which already held it
+at `link.spec`) into `extract_mapping_directive_arguments(schema, name, spec)`, and the
+re-resolution + duplicate constant were deleted. The two-gate invariant above is
+unchanged — the runtime `connect_spec < V0_5` check still runs, just against the
+already-known spec.
+
 ---
 
 ## Parser Changes: nom v8 Migration
