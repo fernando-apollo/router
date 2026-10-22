@@ -560,6 +560,8 @@ Changing the `algorithm` follows the same steps, because each key has its own `a
 
 A one-step swap also works, but routers that don't have the new key yet treat entries encrypted with it as cache misses during the rollout. Nothing breaks. The hit rate dips briefly.
 
+If you use [`private_id`](#private-data-caching), the router forgets which queries are private when it restarts or reloads. The first request for each query afterwards is a cache miss, and it rewrites the entry with the active key, so a restart can rewrite old entries before they are read.
+
 If a key is compromised, replace the key and remove the old one. Every entry written with the old key becomes a cache miss. To remove them from Redis right away, delete the keys in the cache `namespace`.
 
 ### Apply a key change

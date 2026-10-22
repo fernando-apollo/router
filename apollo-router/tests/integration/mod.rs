@@ -38,6 +38,12 @@ mod typename;
 ))]
 mod response_cache;
 // In the CI environment we only install Redis on x86_64 Linux
+#[cfg(all(
+    feature = "mock_subgraphs_testing",
+    any(not(feature = "ci"), all(target_arch = "x86_64", target_os = "linux"))
+))]
+mod response_cache_encryption;
+// In the CI environment we only install Redis on x86_64 Linux
 #[cfg(any(not(feature = "ci"), all(target_arch = "x86_64", target_os = "linux")))]
 mod redis;
 mod response_size_limits;
