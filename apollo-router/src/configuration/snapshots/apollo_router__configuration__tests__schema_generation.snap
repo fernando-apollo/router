@@ -126,6 +126,26 @@ expression: "&schema"
         }
       ]
     },
+    "Algorithm": {
+      "description": "The algorithm a key encrypts with. Every algorithm takes a 32-byte key.",
+      "oneOf": [
+        {
+          "const": "aes-256-gcm",
+          "description": "AES-256-GCM",
+          "type": "string"
+        },
+        {
+          "const": "aes-256-gcm-siv",
+          "description": "AES-256-GCM-SIV: stays secure if a nonce is ever reused.",
+          "type": "string"
+        },
+        {
+          "const": "chacha20-poly1305",
+          "description": "ChaCha20-Poly1305: fast without AES hardware acceleration.",
+          "type": "string"
+        }
+      ]
+    },
     "All": {
       "enum": [
         "all"
@@ -2330,6 +2350,7 @@ expression: "&schema"
           "default": {
             "cache_key_headers": null,
             "enabled": null,
+            "encryption": null,
             "invalidation": null,
             "private_id": null,
             "redis": null,
@@ -2370,6 +2391,18 @@ expression: "&schema"
             "boolean",
             "null"
           ]
+        },
+        "encryption": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EncryptionConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Encryption of the values cached for this connector source. A source without its own\n`encryption` uses `all`'s."
         },
         "invalidation": {
           "anyOf": [
@@ -3731,6 +3764,31 @@ expression: "&schema"
         "enabled"
       ],
       "type": "string"
+    },
+    "EncryptionConfig": {
+      "additionalProperties": false,
+      "description": "Encryption of the values cached for a subgraph or connector source.",
+      "properties": {
+        "key": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyConfig"
+            }
+          ],
+          "description": "The key that encrypts values written from now on. It also decrypts them."
+        },
+        "previous_keys": {
+          "description": "Keys that only decrypt. When rotating, list the previous `key` here so the values it\nencrypted stay readable until they expire.",
+          "items": {
+            "$ref": "#/definitions/KeyConfig"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
     },
     "EntityType": {
       "anyOf": [
@@ -7251,6 +7309,35 @@ expression: "&schema"
       ],
       "type": "object"
     },
+    "KeyConfig": {
+      "additionalProperties": false,
+      "description": "An encryption key, and the identifier stored with each value it encrypts.",
+      "properties": {
+        "algorithm": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Algorithm"
+            }
+          ],
+          "default": "aes-256-gcm",
+          "description": "The algorithm this key encrypts with. To change algorithm, rotate to a new key."
+        },
+        "id": {
+          "description": "Identifier stored with each value this key encrypts, so the router knows which key\ndecrypts it. At most 64 characters.",
+          "type": "string"
+        },
+        "secret": {
+          "description": "The key itself: 32 bytes, base64-encoded.",
+          "type": "string",
+          "x-apollo-secret": true
+        }
+      },
+      "required": [
+        "id",
+        "secret"
+      ],
+      "type": "object"
+    },
     "LimitsConfig": {
       "additionalProperties": false,
       "description": "Configuration for operation limits, parser limits, HTTP limits, etc.",
@@ -10344,6 +10431,18 @@ expression: "&schema"
             "null"
           ]
         },
+        "encryption": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EncryptionConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Encryption of the values cached for this subgraph. A subgraph that sets its own replaces\n`all`'s; `null` turns encryption off for it."
+        },
         "invalidation": {
           "anyOf": [
             {
@@ -11673,6 +11772,7 @@ expression: "&schema"
           ],
           "default": {
             "enabled": true,
+            "encryption": null,
             "invalidation": null,
             "private_id": null,
             "redis": null,

@@ -469,7 +469,16 @@ impl CacheStorage for Storage {
             };
             let serialized = serde_json::to_string(&value)?;
             let serialized = match &self.encryption {
-                Some(encryption) => encryption.seal(subgraph_name, &document.key, serialized)?,
+                // A value that can't be encrypted is not cached, and doesn't hold back the rest of
+                // the batch. The failure is counted by the encryption metric.
+                Some(encryption) => match encryption.seal(subgraph_name, &document.key, serialized)
+                {
+                    Ok(sealed) => sealed,
+                    Err(err) => {
+                        tracing::debug!("Not caching a value that could not be encrypted: {err}");
+                        continue;
+                    }
+                },
                 None => serialized,
             };
             let _: () = pipeline
@@ -716,6 +725,17 @@ impl Storage {
 
     pub(crate) fn send_to_maintenance_queue_for_test(&self, key: String) {
         self.send_to_maintenance_queue(key);
+    }
+
+    /// The value Redis holds under `key`, undecoded: what an attacker with access to Redis sees.
+    pub(crate) async fn raw_value_for_test(&self, key: &str) -> Option<String> {
+        self.storage
+            .client()
+            .await
+            .unwrap()
+            .get(self.make_key(key))
+            .await
+            .unwrap()
     }
 }
 
@@ -2302,5 +2322,323 @@ mod tests {
         }
         .with_metrics()
         .await
+    }
+
+    /// Encrypted values against a real Redis.
+    mod encryption {
+        use apollo_redaction::Redacted;
+        use base64::Engine as _;
+        use base64::prelude::BASE64_STANDARD;
+        use fred::interfaces::KeysInterface;
+        use tokio::sync::broadcast;
+        use tower::BoxError;
+
+        use super::SUBGRAPH_NAME;
+        use super::common_document;
+        use super::redis_config;
+        use super::render_doc_keys;
+        use super::*;
+        use crate::plugins::response_cache::ErrorCode;
+        use crate::plugins::response_cache::storage::CacheStorage;
+        use crate::plugins::response_cache::storage::Document;
+        use crate::plugins::response_cache::storage::encryption::Algorithm;
+        use crate::plugins::response_cache::storage::encryption::CacheEncryption;
+        use crate::plugins::response_cache::storage::encryption::EncryptionConfig;
+        use crate::plugins::response_cache::storage::encryption::KeyConfig;
+        use crate::plugins::response_cache::storage::encryption::ScopeEncryptionConfig;
+        use crate::plugins::response_cache::storage::encryption::ScopedEncryption;
+        use crate::plugins::response_cache::storage::redis::Storage;
+
+        const SENTINEL: &str = "SENTINEL-ACCOUNT-1234567890";
+
+        fn key(id: &str, byte: u8, algorithm: Algorithm) -> KeyConfig {
+            KeyConfig {
+                id: id.to_string(),
+                algorithm,
+                secret: Redacted::new(BASE64_STANDARD.encode([byte; 32])),
+            }
+        }
+
+        fn config(key: KeyConfig, previous_keys: Vec<KeyConfig>) -> EncryptionConfig {
+            EncryptionConfig { key, previous_keys }
+        }
+
+        fn scoped(
+            all: &EncryptionConfig,
+            overrides: Vec<(&str, Option<&EncryptionConfig>)>,
+        ) -> ScopedEncryption {
+            let keyring = CacheEncryption::new(
+                ScopeEncryptionConfig {
+                    all: Some(all),
+                    overrides,
+                },
+                ScopeEncryptionConfig {
+                    all: None,
+                    overrides: Vec::new(),
+                },
+            )
+            .expect("valid keys")
+            .expect("encryption is configured");
+            Arc::new(keyring)
+                .for_scope(CacheScope::Subgraph)
+                .expect("a subgraph key is configured")
+        }
+
+        /// A storage on `config`'s namespace that encrypts with `encryption`, if given.
+        async fn storage(
+            config: &Config,
+            encryption: Option<ScopedEncryption>,
+        ) -> Result<Storage, BoxError> {
+            let (_drop_tx, drop_rx) = broadcast::channel(2);
+            let storage = Storage::new(config, drop_rx).await?;
+            Ok(match encryption {
+                Some(encryption) => storage.with_encryption(encryption),
+                None => storage,
+            })
+        }
+
+        fn document(key: &str) -> Document {
+            Document {
+                key: key.to_string(),
+                data: serde_json_bytes::json!({ "account": SENTINEL }),
+                ..common_document()
+            }
+        }
+
+        /// The value Redis holds under `key`, as a string.
+        async fn stored(storage: &Storage, key: &str) -> Option<String> {
+            storage.raw_value_for_test(key).await
+        }
+
+        #[tokio::test]
+        #[rstest::rstest]
+        async fn values_are_stored_as_envelopes_and_read_back(
+            #[values(true, false)] clustered: bool,
+            #[values(
+                Algorithm::Aes256Gcm,
+                Algorithm::Aes256GcmSiv,
+                Algorithm::Chacha20Poly1305
+            )]
+            algorithm: Algorithm,
+        ) -> Result<(), BoxError> {
+            let encryption = scoped(&config(key("k1", 1, algorithm), Vec::new()), Vec::new());
+            let storage = storage(&redis_config(clustered), Some(encryption)).await?;
+            storage.truncate_namespace().await?;
+            let document = document("encrypted");
+
+            storage.insert(document.clone(), SUBGRAPH_NAME).await?;
+
+            let value = stored(&storage, &document.key).await.expect("stored");
+            let algorithm = serde_json::to_value(algorithm)?;
+            assert!(
+                value.starts_with(&format!(r#"{{"enc":1,"kid":"k1","alg":{algorithm},"#,)),
+                "{value}"
+            );
+            assert!(!value.contains(SENTINEL), "{value}");
+            let entry = storage.fetch(&document.key, SUBGRAPH_NAME).await?;
+            assert_eq!(entry.data, document.data);
+            Ok(())
+        }
+
+        #[tokio::test]
+        #[rstest::rstest]
+        async fn subgraphs_sharing_a_storage_are_encrypted_with_their_own_keys(
+            #[values(true, false)] clustered: bool,
+        ) -> Result<(), BoxError> {
+            let all = config(key("all", 1, Algorithm::Aes256Gcm), Vec::new());
+            let accounts = config(key("accounts", 2, Algorithm::Aes256Gcm), Vec::new());
+            let encryption = scoped(&all, vec![("accounts", Some(&accounts)), ("open", None)]);
+            let storage = storage(&redis_config(clustered), Some(encryption)).await?;
+            storage.truncate_namespace().await?;
+
+            for (name, key) in [
+                ("accounts", "k-accounts"),
+                ("other", "k-other"),
+                ("open", "k-open"),
+            ] {
+                storage.insert(document(key), name).await?;
+            }
+
+            assert!(
+                stored(&storage, "k-accounts")
+                    .await
+                    .unwrap()
+                    .contains(r#""kid":"accounts""#)
+            );
+            assert!(
+                stored(&storage, "k-other")
+                    .await
+                    .unwrap()
+                    .contains(r#""kid":"all""#)
+            );
+            // `null` opts a subgraph out of the `all` encryption.
+            assert!(stored(&storage, "k-open").await.unwrap().contains(SENTINEL));
+            for (name, key) in [
+                ("accounts", "k-accounts"),
+                ("other", "k-other"),
+                ("open", "k-open"),
+            ] {
+                assert!(storage.fetch(key, name).await.is_ok(), "{name}");
+            }
+            Ok(())
+        }
+
+        #[tokio::test]
+        #[rstest::rstest]
+        async fn rotating_keys_keeps_old_values_readable_until_the_old_key_is_removed(
+            #[values(true, false)] clustered: bool,
+        ) -> Result<(), BoxError> {
+            let redis = redis_config(clustered);
+            let old = key("k1", 1, Algorithm::Aes256Gcm);
+            let new = key("k2", 2, Algorithm::Chacha20Poly1305);
+            let writer = storage(
+                &redis,
+                Some(scoped(&config(old.clone(), Vec::new()), Vec::new())),
+            )
+            .await?;
+            writer.truncate_namespace().await?;
+            writer.insert(document("rotated"), SUBGRAPH_NAME).await?;
+
+            let rotated = storage(
+                &redis,
+                Some(scoped(&config(new.clone(), vec![old]), Vec::new())),
+            )
+            .await?;
+            assert!(rotated.fetch("rotated", SUBGRAPH_NAME).await.is_ok());
+
+            let without_old =
+                storage(&redis, Some(scoped(&config(new, Vec::new()), Vec::new()))).await?;
+            let error = without_old
+                .fetch("rotated", SUBGRAPH_NAME)
+                .await
+                .expect_err("the key that sealed the value was removed");
+            assert_eq!(error.code(), "Encryption::UnknownKey");
+            Ok(())
+        }
+
+        #[tokio::test]
+        #[rstest::rstest]
+        async fn a_value_that_cannot_be_used_is_a_miss_and_the_rest_of_the_batch_is_read(
+            #[values(true, false)] clustered: bool,
+        ) -> Result<(), BoxError> {
+            let redis = redis_config(clustered);
+            let plain = storage(&redis, None).await?;
+            plain.truncate_namespace().await?;
+            plain.insert(document("plain"), SUBGRAPH_NAME).await?;
+            let storage = storage(
+                &redis,
+                Some(scoped(
+                    &config(key("k1", 1, Algorithm::Aes256Gcm), Vec::new()),
+                    Vec::new(),
+                )),
+            )
+            .await?;
+            storage.insert(document("good"), SUBGRAPH_NAME).await?;
+            let client = storage.storage.client().await?;
+            for (key, value) in [
+                (
+                    "bad-envelope",
+                    fred::types::Value::from(
+                        r#"{"enc":1,"kid":"k1","alg":"aes-256-gcm","nonce":"!","ct":"x"}"#,
+                    ),
+                ),
+                ("garbage", fred::types::Value::from("not json")),
+                (
+                    "binary",
+                    fred::types::Value::Bytes(bytes::Bytes::from_static(&[0xff, 0xfe])),
+                ),
+            ] {
+                let _: () = client
+                    .set(storage.make_key(key), value, None, None, false)
+                    .await?;
+            }
+            let keys = ["plain", "bad-envelope", "garbage", "binary", "good"];
+
+            let results = storage
+                .internal_fetch_multiple(&keys, SUBGRAPH_NAME)
+                .await?;
+
+            let codes: Vec<_> = results
+                .iter()
+                .map(|result| result.as_ref().err().map(ErrorCode::code))
+                .collect();
+            assert_eq!(
+                codes,
+                vec![
+                    Some("Encryption::Plaintext"),
+                    Some("Encryption::Malformed"),
+                    Some("Encryption::Plaintext"),
+                    Some("Encryption::Malformed"),
+                    None
+                ]
+            );
+            let hits = storage.fetch_multiple(&keys, SUBGRAPH_NAME).await?;
+            assert_eq!(hits.iter().filter(|hit| hit.is_some()).count(), 1);
+            Ok(())
+        }
+
+        #[tokio::test]
+        #[rstest::rstest]
+        async fn the_tag_index_stays_plaintext_and_invalidation_removes_encrypted_values(
+            #[values(true, false)] clustered: bool,
+        ) -> Result<(), BoxError> {
+            let encryption = scoped(
+                &config(key("k1", 1, Algorithm::Aes256Gcm), Vec::new()),
+                Vec::new(),
+            );
+            let storage = storage(&redis_config(clustered), Some(encryption)).await?;
+            storage.truncate_namespace().await?;
+            let document = document("tagged");
+            let tag_key = render_doc_keys(&document, SUBGRAPH_NAME)
+                .into_iter()
+                .find(|key| key.contains("invalidate"))
+                .expect("the document has a tag");
+
+            storage.insert(document.clone(), SUBGRAPH_NAME).await?;
+
+            // The tag value is part of the index key, which is not encrypted.
+            assert!(storage.zexists(&tag_key, &document.key).await?);
+            storage
+                .invalidate_by_subgraph(CacheScope::Subgraph, SUBGRAPH_NAME, "subgraph")
+                .await?;
+            assert!(!storage.exists(&document.key).await?);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn sealing_and_opening_are_counted_by_outcome() -> Result<(), BoxError> {
+            async move {
+                let encryption = scoped(
+                    &config(key("k1", 1, Algorithm::Aes256Gcm), Vec::new()),
+                    Vec::new(),
+                );
+                let storage = storage(&redis_config(false), Some(encryption)).await?;
+                storage.truncate_namespace().await?;
+                storage.insert(document("counted"), SUBGRAPH_NAME).await?;
+                storage.fetch("counted", SUBGRAPH_NAME).await?;
+
+                assert_counter!(
+                    "apollo.router.operations.response_cache.encryption",
+                    1,
+                    "operation" = "encrypt",
+                    "key_id" = "k1",
+                    "algorithm" = "aes-256-gcm",
+                    "subgraph.name" = SUBGRAPH_NAME,
+                    "outcome" = "success"
+                );
+                assert_counter!(
+                    "apollo.router.operations.response_cache.encryption",
+                    1,
+                    "operation" = "decrypt",
+                    "key_id" = "k1",
+                    "algorithm" = "aes-256-gcm",
+                    "subgraph.name" = SUBGRAPH_NAME,
+                    "outcome" = "success"
+                );
+                Ok(())
+            }
+            .with_metrics()
+            .await
+        }
     }
 }

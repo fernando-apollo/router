@@ -114,6 +114,8 @@ pub(crate) enum ConfigError {
     InvalidBase64(String),
     #[error("response cache encryption key `{id}` must be 32 bytes, but it is {len} bytes")]
     InvalidLength { id: String, len: usize },
+    #[error("response cache encryption key `{id}` can't be used with {algorithm}")]
+    InvalidKey { id: String, algorithm: &'static str },
     #[error(
         "response cache encryption key ID `{0}` is configured with two different secrets or algorithms"
     )]
@@ -200,10 +202,12 @@ impl CacheEncryption {
         let keys = secrets
             .into_iter()
             .map(|(id, (algorithm, bytes))| {
-                let len = bytes.len();
                 Cipher::new(algorithm, &bytes)
                     .map(|cipher| (id.clone(), Key { algorithm, cipher }))
-                    .map_err(|_| ConfigError::InvalidLength { id, len })
+                    .map_err(|_| ConfigError::InvalidKey {
+                        id,
+                        algorithm: algorithm.as_str(),
+                    })
             })
             .collect::<Result<_, _>>()?;
 
@@ -214,12 +218,15 @@ impl CacheEncryption {
         }))
     }
 
-    /// This keyring as a storage serving `scope` uses it.
-    pub(crate) fn for_scope(self: &Arc<Self>, scope: CacheScope) -> ScopedEncryption {
-        ScopedEncryption {
+    /// This keyring as a storage serving `scope` uses it, or `None` when no name in that scope
+    /// has encryption, so its storage keeps reading values without any decoding of its own.
+    pub(crate) fn for_scope(self: &Arc<Self>, scope: CacheScope) -> Option<ScopedEncryption> {
+        let scoped = ScopedEncryption {
             keyring: self.clone(),
             scope,
-        }
+        };
+        let active = scoped.active_keys();
+        (active.all.is_some() || active.overrides.values().any(Option::is_some)).then_some(scoped)
     }
 }
 
@@ -574,7 +581,9 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        Arc::new(keyring).for_scope(CacheScope::Subgraph)
+        Arc::new(keyring)
+            .for_scope(CacheScope::Subgraph)
+            .expect("a subgraph key is configured")
     }
 
     fn sealed_key_id(sealed: &str) -> String {
@@ -768,10 +777,33 @@ mod tests {
 
         let sealed = keyring
             .for_scope(CacheScope::Connector)
+            .expect("a connector key is configured")
             .seal("accounts.rest", CACHE_KEY, VALUE.to_string())
             .unwrap();
 
         assert_eq!(sealed_key_id(&sealed), "connectors");
+    }
+
+    #[test]
+    fn for_scope_returns_none_for_a_scope_without_active_keys() {
+        let config = encryption(key("k1", 1), Vec::new());
+        let keyring = Arc::new(
+            CacheEncryption::new(
+                ScopeEncryptionConfig {
+                    all: Some(&config),
+                    overrides: Vec::new(),
+                },
+                ScopeEncryptionConfig {
+                    all: None,
+                    overrides: vec![("accounts.rest", None)],
+                },
+            )
+            .unwrap()
+            .unwrap(),
+        );
+
+        assert!(keyring.for_scope(CacheScope::Subgraph).is_some());
+        assert!(keyring.for_scope(CacheScope::Connector).is_none());
     }
 
     #[test]

@@ -9,11 +9,13 @@ expression: "& metrics.non_zero()"
         attributes:
           opt.connector.cache_key_headers: false
           opt.connector.enabled: true
+          opt.connector.encryption: true
           opt.connector.invalidation.enabled: false
           opt.connector.ttl: true
           opt.debug: true
           opt.enabled: true
           opt.subgraph.enabled: true
+          opt.subgraph.encryption: true
           opt.subgraph.invalidation.enabled: true
           opt.subgraph.redis.required_to_start: true
           opt.subgraph.ttl: true

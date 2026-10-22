@@ -618,10 +618,10 @@ impl PluginPrivate for ResponseCache {
         .map(Arc::new);
         let subgraph_encryption = keyring
             .as_ref()
-            .map(|keyring| keyring.for_scope(CacheScope::Subgraph));
+            .and_then(|keyring| keyring.for_scope(CacheScope::Subgraph));
         let connector_encryption = keyring
             .as_ref()
-            .map(|keyring| keyring.for_scope(CacheScope::Connector));
+            .and_then(|keyring| keyring.for_scope(CacheScope::Connector));
 
         let mut storage_interface = StorageInterface::default();
 
@@ -4047,6 +4047,111 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    /// Builds the plugin the way the router does, from configuration, with `encryption` for all
+    /// subgraphs, except `open`, which opts out.
+    async fn encrypted_plugin(
+        encryption: serde_json_bytes::Value,
+    ) -> Result<ResponseCache, tower::BoxError> {
+        let valid_schema = Arc::new(Schema::parse_and_validate(SCHEMA, "test.graphql").unwrap());
+        let config: super::Config = serde_json_bytes::from_value(serde_json_bytes::json!({
+            "enabled": true,
+            "subgraph": {
+                "all": {
+                    "enabled": true,
+                    "ttl": "10s",
+                    "redis": {
+                        "urls": ["redis://127.0.0.1:6379"],
+                        "namespace": Uuid::new_v4().to_string(),
+                        "pool_size": 1,
+                        "required_to_start": true,
+                    },
+                    "encryption": encryption,
+                },
+                "subgraphs": {
+                    "user": { "enabled": true },
+                    "open": { "enabled": true, "encryption": null }
+                }
+            }
+        }))
+        .unwrap();
+        ResponseCache::new(PluginInit::fake_new(
+            config,
+            Arc::new(valid_schema.to_string()),
+        ))
+        .await
+    }
+
+    fn document_with_secret(key: &str) -> crate::plugins::response_cache::storage::Document {
+        crate::plugins::response_cache::storage::Document {
+            key: key.to_string(),
+            data: serde_json_bytes::json!({ "account": "SENTINEL-ACCOUNT-1234567890" }),
+            control: Default::default(),
+            cache_tags: Vec::new(),
+            cdn_invalidation_tags: Vec::new(),
+            expire: Duration::from_secs(60),
+            scope: crate::plugins::response_cache::cache_tag::CacheScope::Subgraph,
+            mapping_problems: Vec::new(),
+            status: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn encryption_configured_for_the_plugin_encrypts_what_its_storage_writes() {
+        use crate::plugins::response_cache::storage::CacheStorage as _;
+
+        let response_cache = encrypted_plugin(serde_json_bytes::json!({
+            "key": { "id": "k1", "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }
+        }))
+        .await
+        .unwrap();
+        let storage = response_cache.storage.all.as_ref().unwrap().get().unwrap();
+
+        storage
+            .insert(document_with_secret("encrypted"), "user")
+            .await
+            .unwrap();
+        storage
+            .insert(document_with_secret("plain"), "open")
+            .await
+            .unwrap();
+
+        let encrypted = storage.raw_value_for_test("encrypted").await.unwrap();
+        assert!(encrypted.starts_with(r#"{"enc":1,"kid":"k1","alg":"aes-256-gcm","#));
+        assert!(!encrypted.contains("SENTINEL"));
+        // `encryption: null` opts a subgraph out.
+        assert!(
+            storage
+                .raw_value_for_test("plain")
+                .await
+                .unwrap()
+                .contains("SENTINEL")
+        );
+        assert_eq!(
+            storage.fetch("encrypted", "user").await.unwrap().data,
+            document_with_secret("encrypted").data
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bad_encryption_key_fails_startup_without_showing_the_secret() {
+        // 16 bytes, base64-encoded
+        let secret = "QUJDREVGR0hJSktMTU5PUA==";
+
+        let error = encrypted_plugin(serde_json_bytes::json!({
+            "key": { "id": "k1", "secret": secret }
+        }))
+        .await
+        .err()
+        .expect("a 16-byte key must be rejected")
+        .to_string();
+
+        assert!(
+            error.contains("k1") && error.contains("32 bytes"),
+            "{error}"
+        );
+        assert!(!error.contains(secret), "{error}");
     }
 
     #[tokio::test]

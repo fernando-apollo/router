@@ -370,7 +370,13 @@ impl InstrumentData {
             // deployment actually partitions on headers or deliberately opted out.
             "$[?(@.connector.all.cache_key_headers[0] || @.connector.sources..cache_key_headers[0])]",
             opt.connector.invalidation.enabled,
-            "$[?(@.connector.all.invalidation.enabled || @.connector.sources..invalidation.enabled)]"
+            "$[?(@.connector.all.invalidation.enabled || @.connector.sources..invalidation.enabled)]",
+            opt.subgraph.encryption,
+            // Matching on `key` rather than `encryption` leaves out `encryption: null`, which opts
+            // a subgraph out.
+            "$[?(@.subgraph.all.encryption.key || @.subgraph.subgraphs..encryption.key)]",
+            opt.connector.encryption,
+            "$[?(@.connector.all.encryption.key || @.connector.sources..encryption.key)]"
         );
         populate_config_instrument!(
             apollo.router.config.telemetry,

@@ -5711,6 +5711,100 @@ async fn connector_root_field_cache_miss_then_hit() {
     );
 }
 
+/// Wait until every key in `keys` holds a value in Redis, and return the values as Redis holds them.
+async fn wait_for_raw_values(storage: &Storage, keys: &[String]) -> Vec<String> {
+    let mut interval_stream =
+        IntervalStream::new(tokio::time::interval(Duration::from_millis(100))).take(50);
+    while interval_stream.next().await.is_some() {
+        let mut values = Vec::new();
+        for key in keys {
+            values.extend(storage.raw_value_for_test(key).await);
+        }
+        if values.len() == keys.len() {
+            return values;
+        }
+    }
+    panic!("insert not complete");
+}
+
+/// With encryption configured for connectors, Redis holds only envelopes, and a second request is
+/// still served from the cache, with the same data.
+#[tokio::test]
+async fn connector_values_are_encrypted_in_redis_and_served_from_cache() {
+    async move {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/users"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("cache-control", "public, max-age=300")
+                    .set_body_json(serde_json::json!([
+                        {"id": 1, "name": "SENTINEL-Alice"},
+                        {"id": 2, "name": "SENTINEL-Bob"}
+                    ])),
+            )
+            .mount(&mock_server)
+            .await;
+        let uri = mock_server.uri();
+        let namespace = Uuid::new_v4().to_string();
+        let encryption = || {
+            Some(serde_json_bytes::json!({
+                "response_cache": { "connector": { "all": { "encryption": {
+                    // 32 zero bytes: a placeholder, not a secret
+                    "key": { "id": "k1", "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }
+                } } } }
+            }))
+        };
+
+        let service = create_connector_cache_service(&uri, &namespace, encryption()).await;
+        let request = make_connector_cache_request("query { users { id name } }");
+        let response = service.oneshot(request).await.unwrap();
+        let first_context = response.context.clone();
+        let first_body = connector_response_body(response).await;
+        assert!(first_body.get("data").is_some(), "{first_body:?}");
+
+        let cache_keys: CacheKeysContext = first_context
+            .get(super::plugin::CONTEXT_DEBUG_CACHE_KEYS)
+            .unwrap()
+            .expect("debug cache keys context missing — was the debug header set?");
+        let keys = expected_cached_keys(&cache_keys);
+        assert!(!keys.is_empty(), "{cache_keys:?}");
+        let (_drop_tx, drop_rx) = tokio::sync::broadcast::channel(2);
+        let storage = Storage::new(&Config::test(false, &namespace), drop_rx)
+            .await
+            .unwrap();
+        for value in wait_for_raw_values(&storage, &keys).await {
+            assert!(value.starts_with(r#"{"enc":1,"kid":"k1""#), "{value}");
+            assert!(!value.contains("SENTINEL"), "{value}");
+        }
+
+        // A second router, so nothing is held in memory: the entry has to come out of Redis.
+        let received_after_first = mock_server.received_requests().await.unwrap().len();
+        let service = create_connector_cache_service(&uri, &namespace, encryption()).await;
+        let request = make_connector_cache_request("query { users { id name } }");
+        let response = service.oneshot(request).await.unwrap();
+        let second_body = connector_response_body(response).await;
+        assert_eq!(first_body["data"], second_body["data"]);
+        assert_eq!(
+            received_after_first,
+            mock_server.received_requests().await.unwrap().len(),
+            "the second request should be served from the cache"
+        );
+
+        assert_counter!(
+            "apollo.router.operations.response_cache.encryption",
+            1,
+            "operation" = "decrypt",
+            "key_id" = "k1",
+            "algorithm" = "aes-256-gcm",
+            "subgraph.name" = "connectors.json",
+            "outcome" = "success"
+        );
+    }
+    .with_metrics()
+    .await
+}
+
 /// A root-field response whose mapping declared errors (`->withError`) is not stored. The cache
 /// entry has no place for declared errors, so a hit would return the data without the
 /// `extensions.connectorErrors` the first client was sent.

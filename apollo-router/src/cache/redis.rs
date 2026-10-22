@@ -270,13 +270,15 @@ where
 }
 
 /// A value as Redis holds it, not decoded.
-pub(crate) struct RawValue(pub(crate) Vec<u8>);
+pub(crate) struct RawValue(pub(crate) bytes::Bytes);
 
 impl FromValue for RawValue {
     fn from_value(value: fred::types::Value) -> Result<Self, RedisError> {
         match value {
-            fred::types::Value::Bytes(data) => Ok(RawValue(data.to_vec())),
-            fred::types::Value::String(s) => Ok(RawValue(s.as_bytes().to_vec())),
+            fred::types::Value::Bytes(data) => Ok(RawValue(data)),
+            fred::types::Value::String(s) => {
+                Ok(RawValue(bytes::Bytes::copy_from_slice(s.as_bytes())))
+            }
             fred::types::Value::Null => Err(RedisError::new(RedisErrorKind::NotFound, "not found")),
             _res => Err(RedisError::new(
                 RedisErrorKind::Parse,
