@@ -3507,6 +3507,7 @@ async fn setup_cdn_invalidation_gating_test(
         .await
         .unwrap();
     let subgraph_config = || Subgraph {
+        encryption: None,
         redis: None,
         private_id: Some("sub".to_string()),
         enabled: true.into(),
@@ -3913,6 +3914,7 @@ async fn cdn_invalidation_header_excludes_deferred_payload_tags() {
             .await
             .unwrap();
         let subgraph_config = || Subgraph {
+            encryption: None,
             redis: None,
             private_id: Some("sub".to_string()),
             enabled: true.into(),
@@ -4060,6 +4062,7 @@ async fn setup_cdn_invalidation_hit_test(
         .await
         .unwrap();
     let subgraph_config = || Subgraph {
+        encryption: None,
         redis: None,
         private_id: Some("sub".to_string()),
         enabled: true.into(),

@@ -86,6 +86,10 @@ use crate::plugins::response_cache::storage;
 use crate::plugins::response_cache::storage::CacheEntry;
 use crate::plugins::response_cache::storage::CacheStorage;
 use crate::plugins::response_cache::storage::Document;
+use crate::plugins::response_cache::storage::encryption::CacheEncryption;
+use crate::plugins::response_cache::storage::encryption::EncryptionConfig;
+use crate::plugins::response_cache::storage::encryption::ScopeEncryptionConfig;
+use crate::plugins::response_cache::storage::encryption::ScopedEncryption;
 use crate::plugins::response_cache::storage::redis::Storage;
 use crate::plugins::telemetry::LruSizeInstrument;
 use crate::plugins::telemetry::dynamic_attribute::SpanDynAttribute;
@@ -408,12 +412,18 @@ pub(crate) struct Subgraph {
     /// Invalidation configuration
     #[schemars(extend("default" = null))]
     pub(crate) invalidation: Option<SubgraphInvalidationConfig>,
+
+    /// Encryption of the values cached for this subgraph. A subgraph that sets its own replaces
+    /// `all`'s; `null` turns encryption off for it.
+    #[schemars(extend("default" = null))]
+    pub(crate) encryption: Option<EncryptionConfig>,
 }
 
 impl SchemaDefault for Subgraph {
     fn schema_default() -> Option<serde_json::Value> {
         Some(serde_json::json!({
             "enabled": true,
+            "encryption": null,
             "invalidation": null,
             "private_id": null,
             "redis": null,
@@ -430,6 +440,7 @@ impl Default for Subgraph {
             ttl: Default::default(),
             private_id: Default::default(),
             invalidation: Default::default(),
+            encryption: Default::default(),
         }
     }
 }
@@ -575,6 +586,43 @@ impl PluginPrivate for ResponseCache {
             );
         }
 
+        let keyring = CacheEncryption::new(
+            ScopeEncryptionConfig {
+                all: init.config.subgraph.all.encryption.as_ref(),
+                overrides: init
+                    .config
+                    .subgraph
+                    .subgraphs
+                    .iter()
+                    .map(|(name, subgraph)| (name.as_str(), subgraph.encryption.as_ref()))
+                    .collect(),
+            },
+            // A listed source without its own `encryption` inherits `all`'s, so only the ones
+            // that set it override.
+            ScopeEncryptionConfig {
+                all: init.config.connector.all.encryption.as_ref(),
+                overrides: init
+                    .config
+                    .connector
+                    .sources
+                    .iter()
+                    .filter_map(|(name, source)| {
+                        source
+                            .encryption
+                            .as_ref()
+                            .map(|encryption| (name.as_str(), Some(encryption)))
+                    })
+                    .collect(),
+            },
+        )?
+        .map(Arc::new);
+        let subgraph_encryption = keyring
+            .as_ref()
+            .map(|keyring| keyring.for_scope(CacheScope::Subgraph));
+        let connector_encryption = keyring
+            .as_ref()
+            .map(|keyring| keyring.for_scope(CacheScope::Connector));
+
         let mut storage_interface = StorageInterface::default();
 
         let (drop_tx, drop_rx) = tokio::sync::broadcast::channel(2);
@@ -584,7 +632,13 @@ impl PluginPrivate for ResponseCache {
         {
             let storage = Arc::new(OnceLock::new());
             storage_interface.all = Some(storage.clone());
-            connect_or_spawn_reconnection_task(config, storage, drop_rx).await?;
+            connect_or_spawn_reconnection_task(
+                config,
+                storage,
+                drop_rx,
+                subgraph_encryption.clone(),
+            )
+            .await?;
         }
 
         for (subgraph, subgraph_config) in &init.config.subgraph.subgraphs {
@@ -604,6 +658,7 @@ impl PluginPrivate for ResponseCache {
                                 config,
                                 storage,
                                 drop_tx.subscribe(),
+                                subgraph_encryption.clone(),
                             )
                             .await?;
                         }
@@ -627,7 +682,13 @@ impl PluginPrivate for ResponseCache {
         {
             let storage = Arc::new(OnceLock::new());
             storage_interface.connector_all = Some(storage.clone());
-            connect_or_spawn_reconnection_task(config, storage, drop_tx.subscribe()).await?;
+            connect_or_spawn_reconnection_task(
+                config,
+                storage,
+                drop_tx.subscribe(),
+                connector_encryption.clone(),
+            )
+            .await?;
         }
 
         for (source, source_config) in &init.config.connector.sources {
@@ -649,6 +710,7 @@ impl PluginPrivate for ResponseCache {
                                 config,
                                 storage,
                                 drop_tx.subscribe(),
+                                connector_encryption.clone(),
                             )
                             .await?;
                         }
@@ -3776,12 +3838,25 @@ async fn connect_or_spawn_reconnection_task(
     config: storage::redis::Config,
     storage: Arc<OnceLock<Storage>>,
     abort_signal: broadcast::Receiver<()>,
+    encryption: Option<ScopedEncryption>,
 ) -> Result<(), BoxError> {
-    match attempt_connection(&config, storage.clone(), abort_signal.resubscribe()).await {
+    match attempt_connection(
+        &config,
+        storage.clone(),
+        abort_signal.resubscribe(),
+        encryption.clone(),
+    )
+    .await
+    {
         Ok(()) => Ok(()),
         Err(err) if config.required_to_start => Err(err),
         Err(_) => {
-            tokio::spawn(reattempt_connection(config.clone(), storage, abort_signal));
+            tokio::spawn(reattempt_connection(
+                config.clone(),
+                storage,
+                abort_signal,
+                encryption,
+            ));
             Ok(())
         }
     }
@@ -3791,6 +3866,7 @@ async fn attempt_connection(
     config: &storage::redis::Config,
     cache_storage: Arc<OnceLock<Storage>>,
     abort_signal: broadcast::Receiver<()>,
+    encryption: Option<ScopedEncryption>,
 ) -> Result<(), BoxError> {
     let storage = Storage::new(config, abort_signal)
         .await
@@ -3801,6 +3877,10 @@ async fn attempt_connection(
                 "could not open connection to Redis for response caching",
             )
         })?;
+    let storage = match encryption {
+        Some(encryption) => storage.with_encryption(encryption),
+        None => storage,
+    };
     let _ = cache_storage.set(storage);
 
     Ok(())
@@ -3810,6 +3890,7 @@ async fn reattempt_connection(
     config: storage::redis::Config,
     cache_storage: Arc<OnceLock<Storage>>,
     mut abort_signal: broadcast::Receiver<()>,
+    encryption: Option<ScopedEncryption>,
 ) {
     let mut interval = IntervalStream::new(tokio::time::interval(Duration::from_secs(30)));
     loop {
@@ -3819,7 +3900,7 @@ async fn reattempt_connection(
                 break;
             }
             _ = interval.next() => {
-                if attempt_connection(&config, cache_storage.clone(), abort_signal.resubscribe()).await.is_ok() {
+                if attempt_connection(&config, cache_storage.clone(), abort_signal.resubscribe(), encryption.clone()).await.is_ok() {
                     break;
                 }
             }

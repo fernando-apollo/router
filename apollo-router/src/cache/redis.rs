@@ -269,6 +269,23 @@ where
     }
 }
 
+/// A value as Redis holds it, not decoded.
+pub(crate) struct RawValue(pub(crate) Vec<u8>);
+
+impl FromValue for RawValue {
+    fn from_value(value: fred::types::Value) -> Result<Self, RedisError> {
+        match value {
+            fred::types::Value::Bytes(data) => Ok(RawValue(data.to_vec())),
+            fred::types::Value::String(s) => Ok(RawValue(s.as_bytes().to_vec())),
+            fred::types::Value::Null => Err(RedisError::new(RedisErrorKind::NotFound, "not found")),
+            _res => Err(RedisError::new(
+                RedisErrorKind::Parse,
+                "the data is the wrong type",
+            )),
+        }
+    }
+}
+
 impl<V> TryInto<fred::types::Value> for RedisValue<V>
 where
     V: ValueType,
@@ -829,6 +846,25 @@ impl RedisCacheStorage {
         keys: Vec<RedisKey<K>>,
         options: Options,
     ) -> Result<Vec<Result<RedisValue<V>, RedisError>>, RedisError> {
+        self.get_multiple_as(keys, options).await
+    }
+
+    /// Like [`Self::get_multiple_with_options`], but returns each value as the bytes Redis holds,
+    /// without decoding them, so one value that isn't what the caller expects can't fail the rest
+    /// of the batch.
+    pub(crate) async fn get_multiple_raw_with_options<K: KeyType>(
+        &self,
+        keys: Vec<RedisKey<K>>,
+        options: Options,
+    ) -> Result<Vec<Result<RawValue, RedisError>>, RedisError> {
+        self.get_multiple_as(keys, options).await
+    }
+
+    async fn get_multiple_as<K: KeyType, T: FromValue>(
+        &self,
+        keys: Vec<RedisKey<K>>,
+        options: Options,
+    ) -> Result<Vec<Result<T, RedisError>>, RedisError> {
         tracing::trace!("getting multiple values from redis: {:?}", keys);
         if self.is_cluster {
             // we cannot do an MGET across hash slots (error: "ERR CROSSSLOT Keys in request don't
@@ -845,8 +881,7 @@ impl RedisCacheStorage {
             for (index, key) in keys.into_iter().enumerate() {
                 let client = client.clone();
                 tasks.push(async move {
-                    let res_value: Result<RedisValue<V>, RedisError> =
-                        client.get(self.make_key(key)).await;
+                    let res_value: Result<T, RedisError> = client.get(self.make_key(key)).await;
                     (index, res_value)
                 })
             }
@@ -862,7 +897,7 @@ impl RedisCacheStorage {
                 .into_iter()
                 .map(|k| self.make_key(k))
                 .collect::<Vec<_>>();
-            let values: Vec<Option<RedisValue<V>>> = self
+            let values: Vec<Option<T>> = self
                 .client()
                 .await?
                 .with_options(&options)

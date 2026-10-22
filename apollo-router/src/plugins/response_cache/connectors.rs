@@ -55,6 +55,7 @@ use super::storage;
 use super::storage::CacheEntry;
 use super::storage::CacheStorage;
 use super::storage::Document;
+use super::storage::encryption::EncryptionConfig;
 use super::storage::redis::Storage;
 use crate::Context;
 use crate::context::OPERATION_KIND;
@@ -91,6 +92,7 @@ pub(crate) struct ConnectorCacheConfiguration {
     #[schemars(extend("default" = {
         "cache_key_headers": null,
         "enabled": null,
+        "encryption": null,
         "invalidation": null,
         "private_id": null,
         "redis": null,
@@ -214,6 +216,13 @@ pub(crate) struct ConnectorCacheSource {
     // SubgraphInvalidationConfig doesn't use the configuration attribute, so it has no Validate impl.
     #[config(skip_validate)]
     pub(crate) invalidation: Option<SubgraphInvalidationConfig>,
+
+    /// Encryption of the values cached for this connector source. A source without its own
+    /// `encryption` uses `all`'s.
+    #[schemars(extend("default" = null))]
+    // The key secrets are redacted strings, which have no Validate impl.
+    #[config(skip_validate)]
+    pub(crate) encryption: Option<EncryptionConfig>,
 }
 
 // --- Connector Cache Service ---

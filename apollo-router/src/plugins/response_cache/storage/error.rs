@@ -1,5 +1,6 @@
 use serde_json::error::Category;
 
+use super::encryption::EncryptionError;
 use crate::plugins::response_cache::ErrorCode;
 
 #[derive(Debug, thiserror::Error)]
@@ -9,6 +10,9 @@ pub(crate) enum Error {
 
     #[error("{0}")]
     Join(#[from] tokio::task::JoinError),
+
+    #[error("{0}")]
+    Encryption(#[from] EncryptionError),
 
     #[error("NO_STORAGE")]
     NoStorage,
@@ -45,6 +49,7 @@ impl ErrorCode for Error {
                     "PANICKED"
                 }
             }
+            Error::Encryption(err) => err.code(),
             Error::NoStorage => "NO_STORAGE",
             Error::Serialize(err) => match err.classify() {
                 Category::Io => "Serialize::IO",

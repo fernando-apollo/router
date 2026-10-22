@@ -1,4 +1,5 @@
 mod config;
+pub(super) mod encryption;
 mod error;
 pub(super) mod redis;
 
@@ -141,13 +142,17 @@ pub(super) trait CacheStorage {
     }
 
     #[doc(hidden)]
-    async fn internal_fetch(&self, cache_key: &str) -> StorageResult<CacheEntry>;
+    async fn internal_fetch(
+        &self,
+        cache_key: &str,
+        subgraph_name: &str,
+    ) -> StorageResult<CacheEntry>;
 
     /// Fetch the value belonging to `cache_key`. Command will be timed out after `self.fetch_timeout()`.
     async fn fetch(&self, cache_key: &str, subgraph_name: &str) -> StorageResult<CacheEntry> {
         let now = Instant::now();
         let result = flatten_storage_error(
-            self.internal_fetch(cache_key)
+            self.internal_fetch(cache_key, subgraph_name)
                 .timeout(self.fetch_timeout())
                 .await,
         );
@@ -160,6 +165,7 @@ pub(super) trait CacheStorage {
     async fn internal_fetch_multiple(
         &self,
         cache_keys: &[&str],
+        subgraph_name: &str,
     ) -> StorageResult<Vec<StorageResult<CacheEntry>>>;
 
     /// Fetch the values belonging to `cache_keys`. Command will be timed out after `self.fetch_timeout()`.
@@ -172,7 +178,7 @@ pub(super) trait CacheStorage {
 
         let now = Instant::now();
         let result = flatten_storage_error(
-            self.internal_fetch_multiple(cache_keys)
+            self.internal_fetch_multiple(cache_keys, subgraph_name)
                 .timeout(self.fetch_timeout())
                 .await,
         );

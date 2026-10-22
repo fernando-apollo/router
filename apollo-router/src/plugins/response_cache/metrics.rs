@@ -39,6 +39,28 @@ pub(super) fn record_fetch_error(error: &storage::Error, subgraph_name: &str) {
     tracing::debug!(error = %error, "unable to fetch data from response cache");
 }
 
+/// Counts a value being encrypted for, or decrypted from, Redis. `key_id` and `algorithm` come from
+/// the configuration (`unknown` when a stored value names a key that is not configured).
+pub(super) fn record_encryption(
+    operation: &'static str,
+    key_id: &str,
+    algorithm: &str,
+    subgraph_name: &str,
+    outcome: &'static str,
+) {
+    u64_counter_with_unit!(
+        "apollo.router.operations.response_cache.encryption",
+        "Cached values encrypted or decrypted",
+        "{operation}",
+        1,
+        "operation" = operation,
+        "key_id" = key_id.to_string(),
+        "algorithm" = algorithm.to_string(),
+        "subgraph.name" = subgraph_name.to_string(),
+        "outcome" = outcome
+    );
+}
+
 pub(super) fn record_fetch_duration(duration: Duration, subgraph_name: &str, batch_size: usize) {
     f64_histogram_with_unit!(
         "apollo.router.operations.response_cache.fetch",

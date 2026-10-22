@@ -26,6 +26,8 @@ use super::CacheEntry;
 use super::CacheStorage;
 use super::Document;
 use super::StorageResult;
+use super::encryption::EncryptionError;
+use super::encryption::ScopedEncryption;
 use crate::cache::redis::RedisCacheStorage;
 use crate::cache::redis::RedisKey;
 use crate::cache::redis::RedisValue;
@@ -96,6 +98,9 @@ pub(crate) struct Storage {
     insert_timeout: Duration,
     invalidate_timeout: Duration,
     maintenance_timeout: Duration,
+    /// Encrypts the values this storage writes and opens the ones it reads. `None` when no
+    /// subgraph or connector source configures encryption.
+    encryption: Option<ScopedEncryption>,
 }
 
 impl Storage {
@@ -131,9 +136,50 @@ impl Storage {
             insert_timeout: config.insert_timeout,
             invalidate_timeout: config.invalidate_timeout,
             maintenance_timeout: config.maintenance_timeout,
+            encryption: None,
         };
         s.perform_periodic_maintenance(cache_tag_rx, drop_rx).await;
         Ok(s)
+    }
+
+    /// Encrypts the values this storage writes, and opens the ones it reads, with `encryption`.
+    pub(crate) fn with_encryption(mut self, encryption: ScopedEncryption) -> Self {
+        self.encryption = Some(encryption);
+        self
+    }
+
+    /// Reads `cache_keys` as the bytes Redis holds and decodes each one on its own, so a value
+    /// that can't be opened is that value's miss and never fails the others.
+    async fn fetch_decoded(
+        &self,
+        encryption: &ScopedEncryption,
+        cache_keys: &[&str],
+        subgraph_name: &str,
+    ) -> StorageResult<Vec<StorageResult<CacheEntry>>> {
+        let keys: Vec<RedisKey<String>> = cache_keys
+            .iter()
+            .map(|key| RedisKey(key.to_string()))
+            .collect();
+        let options = Options {
+            timeout: Some(self.fetch_timeout()),
+            ..Options::default()
+        };
+        let values = self
+            .storage
+            .get_multiple_raw_with_options(keys, options)
+            .await?;
+
+        Ok(values
+            .into_iter()
+            .zip(cache_keys)
+            .map(|(value, cache_key)| {
+                let raw = value?;
+                let raw = std::str::from_utf8(&raw.0).map_err(|_| EncryptionError::Malformed)?;
+                let opened = encryption.open(subgraph_name, cache_key, raw)?;
+                let value: CacheValue = serde_json::from_str(&opened)?;
+                Ok(CacheEntry::from((*cache_key, value)))
+            })
+            .collect())
     }
 
     fn make_key<K: KeyType>(&self, key: K) -> String {
@@ -421,10 +467,15 @@ impl CacheStorage for Storage {
                 mapping_problems: document.mapping_problems,
                 status: document.status,
             };
+            let serialized = serde_json::to_string(&value)?;
+            let serialized = match &self.encryption {
+                Some(encryption) => encryption.seal(subgraph_name, &document.key, serialized)?,
+                None => serialized,
+            };
             let _: () = pipeline
                 .set::<(), _, _>(
                     self.make_key(document.key),
-                    &serde_json::to_string(&value)?,
+                    &serialized,
                     Some(Expiration::EXAT((now + document.expire.as_secs()) as i64)),
                     None,
                     false,
@@ -443,7 +494,21 @@ impl CacheStorage for Storage {
         Ok(())
     }
 
-    async fn internal_fetch(&self, cache_key: &str) -> StorageResult<CacheEntry> {
+    async fn internal_fetch(
+        &self,
+        cache_key: &str,
+        subgraph_name: &str,
+    ) -> StorageResult<CacheEntry> {
+        if let Some(encryption) = &self.encryption {
+            return self
+                .fetch_decoded(encryption, &[cache_key], subgraph_name)
+                .await?
+                .pop()
+                .ok_or(fred::error::Error::new(
+                    fred::error::ErrorKind::NotFound,
+                    "not found",
+                ))?;
+        }
         // NB: don't need `make_key` for `get` - the storage layer already runs it
         let options = Options {
             timeout: Some(self.fetch_timeout()),
@@ -459,7 +524,13 @@ impl CacheStorage for Storage {
     async fn internal_fetch_multiple(
         &self,
         cache_keys: &[&str],
+        subgraph_name: &str,
     ) -> StorageResult<Vec<StorageResult<CacheEntry>>> {
+        if let Some(encryption) = &self.encryption {
+            return self
+                .fetch_decoded(encryption, cache_keys, subgraph_name)
+                .await;
+        }
         let keys: Vec<RedisKey<String>> = cache_keys
             .iter()
             .map(|key| RedisKey(key.to_string()))
@@ -567,6 +638,7 @@ impl Storage {
             insert_timeout: config.insert_timeout,
             invalidate_timeout: config.invalidate_timeout,
             maintenance_timeout: config.maintenance_timeout,
+            encryption: None,
         };
         s.perform_periodic_maintenance(cache_tag_rx, drop_rx).await;
         Ok(s)

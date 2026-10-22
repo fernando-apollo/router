@@ -798,6 +798,7 @@ mod indexes_tests {
         per_subgraph: Option<(&str, InvalidationIndexes)>,
     ) -> SubgraphConfiguration<Subgraph> {
         let all = Subgraph {
+            encryption: None,
             ttl: None,
             enabled: Some(true),
             redis: None,
@@ -813,6 +814,7 @@ mod indexes_tests {
             map.insert(
                 name.to_string(),
                 Subgraph {
+                    encryption: None,
                     ttl: None,
                     enabled: Some(true),
                     redis: None,
@@ -1290,6 +1292,7 @@ mod tests {
 
         let config = Arc::new(SubgraphConfiguration {
             all: Subgraph {
+                encryption: None,
                 ttl: None,
                 enabled: Some(true),
                 redis: None,
@@ -1346,6 +1349,7 @@ mod tests {
 
         let config = Arc::new(SubgraphConfiguration {
             all: Subgraph {
+                encryption: None,
                 ttl: None,
                 enabled: Some(true),
                 redis: None,
@@ -1359,6 +1363,7 @@ mod tests {
             subgraphs: [(
                 String::from("test"),
                 Subgraph {
+                    encryption: None,
                     ttl: None,
                     enabled: Some(true),
                     redis: None,
@@ -1412,6 +1417,7 @@ mod tests {
 
         let config = Arc::new(SubgraphConfiguration {
             all: Subgraph {
+                encryption: None,
                 ttl: None,
                 enabled: Some(true),
                 redis: None,
@@ -1426,6 +1432,7 @@ mod tests {
                 (
                     String::from("foor"),
                     Subgraph {
+                        encryption: None,
                         ttl: None,
                         enabled: Some(true),
                         redis: None,
@@ -1440,6 +1447,7 @@ mod tests {
                 (
                     String::from("bar"),
                     Subgraph {
+                        encryption: None,
                         ttl: None,
                         enabled: Some(true),
                         redis: None,
@@ -1499,6 +1507,7 @@ mod tests {
 
         let config = Arc::new(SubgraphConfiguration {
             all: Subgraph {
+                encryption: None,
                 ttl: None,
                 enabled: Some(true),
                 redis: None,
@@ -1513,6 +1522,7 @@ mod tests {
                 (
                     String::from("foor"),
                     Subgraph {
+                        encryption: None,
                         ttl: None,
                         enabled: Some(true),
                         redis: None,
@@ -1527,6 +1537,7 @@ mod tests {
                 (
                     String::from("bar"),
                     Subgraph {
+                        encryption: None,
                         ttl: None,
                         enabled: Some(true),
                         redis: None,
@@ -1586,6 +1597,7 @@ mod tests {
 
         let config = Arc::new(SubgraphConfiguration {
             all: Subgraph {
+                encryption: None,
                 ttl: None,
                 enabled: Some(true),
                 redis: None,

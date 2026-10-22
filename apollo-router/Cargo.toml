@@ -73,6 +73,7 @@ async-compression = { version = "0.4.6", features = [
     "zstd",
 ] }
 async-trait.workspace = true
+aws-lc-rs = "1.18.0"
 axum = { version = "0.8.1", features = ["http2"] }
 base64 = "0.23.0"
 bloomfilter = "3.0.0"
