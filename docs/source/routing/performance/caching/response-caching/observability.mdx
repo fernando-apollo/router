@@ -70,6 +70,39 @@ telemetry:
 | `apollo.router.operations.response_cache.insert.error` | Errors when inserting data in cache | `{error}` |
 | `apollo.router.operations.response_cache.insert` | Time to insert new data in cache | `s` |
 
+### Encryption
+
+These track [encrypted cached values](/router/performance/caching/response-caching/customization#encrypting-cached-values), and only report when `encryption` is configured.
+
+| Name | Description | Unit |
+| --- | --- | --- |
+| `apollo.router.operations.response_cache.encryption` | Cached values encrypted for, or decrypted from, Redis | `{operation}` |
+
+Attributes:
+
+- `operation`: `encrypt` or `decrypt`.
+- `key_id`: the `id` of the key used, or `unknown` when a stored value names a key that isn't configured.
+- `algorithm`: the key's algorithm, or `unknown` with an unknown `key_id`.
+- `subgraph.name`: the subgraph, or the connector source (`subgraph_name.source_name`).
+- `outcome`: `success`, `unknown_key` (the value was encrypted with a key that isn't configured), `decrypt_failed` (the value failed authentication, for example because it was altered or moved to another key), `plaintext_rejected` (a plain value where encryption is configured), `malformed` (not a valid encrypted value), or `encrypt_failed`.
+
+Use it to:
+
+- **Alert on failures.** Any outcome other than `success` is a cache miss. A sustained `unknown_key` after a rotation means a router doesn't have the key yet or a key was removed too early. This Prometheus alert fires when values keep failing:
+
+  ```yaml title="prometheus-rules.yaml"
+  - alert: ResponseCacheEncryptionFailures
+    expr: sum by (subgraph_name, outcome) (rate(apollo_router_operations_response_cache_encryption_total{outcome!="success"}[5m])) > 0
+    for: 10m
+    annotations:
+      summary: Cached values can't be encrypted or decrypted
+  ```
+
+- **Know when an old key is unused.** Remove a key from `previous_keys` once `operation="decrypt"` for its `key_id` stays at zero.
+- **Rotate before a key wears out.** Random 96-bit nonces limit how many values one key should encrypt (see [Choose an algorithm](/router/performance/caching/response-caching/customization#choose-an-algorithm)). Alert on `operation="encrypt"` per `key_id`, for example when its total passes 2<sup>31</sup>.
+
+The router doesn't log per entry. The metric above and `apollo.router.operations.response_cache.fetch.error` (with `code` values beginning `Encryption::`) report failures.
+
 ### Invalidation
 
 | Name | Description | Unit |

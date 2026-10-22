@@ -479,6 +479,103 @@ response_cache:
         pool_size: 15
 ```
 
+## Encrypting cached values
+
+By default, the router stores cached responses in Redis as plain JSON. If your cache holds sensitive data, configure `encryption` so the router encrypts each value before writing it to Redis and decrypts it when it reads it back.
+
+### What is and isn't protected
+
+- **Protected:** each cached value as a whole: the response data, its `Cache-Control` information, its cache tags, and connector mapping details. Anyone who reads the value from Redis, from a snapshot, or from a backup sees only an encrypted envelope.
+- **Not protected:** the keys under which values are stored, and the invalidation index. Cache keys include hashes derived from the request and from entity data, and the invalidation index key names contain the values of your cache tags. Don't put sensitive identifiers in `@cacheTag` values.
+- **Not protected:** the router's memory, the [cache debugger](/router/performance/caching/response-caching/observability#cache-debugger) output, and the traffic between the router and Redis (use [TLS](#tls-and-authentication) for that).
+
+### Configure encryption
+
+Give each key an `id` and a `secret`. The `secret` is 32 bytes, base64-encoded. Generate one with `openssl rand -base64 32`. The router stores the `id` with every value it encrypts, so it knows which key decrypts it.
+
+Use `${env.X}` or `${file.X}` [expansion](/router/configuration/yaml#variable-expansion) so keys stay out of the `router.yaml` you commit to version control:
+
+```yaml title="router.yaml"
+response_cache:
+  enabled: true
+  subgraph:
+    all:
+      enabled: true
+      redis:
+        urls: ["redis://..."]
+      encryption:
+        key:
+          id: "2026-10"
+          secret: "${env.RESPONSE_CACHE_KEY}" # or "${file.PATH_TO_KEY_FILE}"
+```
+
+A literal `secret` also works. This one is a placeholder: it's 32 zero bytes, so don't use it.
+
+```yaml title="router.yaml"
+      encryption:
+        key:
+          id: "example"
+          secret: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+```
+
+- Set `encryption` under `response_cache.subgraph.all` for subgraphs, and under `response_cache.connector.all` for Apollo Connectors. Both use the same options.
+- A subgraph (`response_cache.subgraph.subgraphs.<name>`) that sets its own `encryption` replaces `all`'s for that subgraph, and `encryption: null` turns encryption off for it. A connector source (`response_cache.connector.sources.<subgraph_name.source_name>`) that sets its own `encryption` replaces `all`'s; without one it uses `all`'s.
+- A key that isn't valid base64 or isn't 32 bytes fails router startup or reload. The error names the key `id`, never the secret. The same `id` can't be configured with two different secrets or algorithms.
+
+### Choose an algorithm
+
+Set `algorithm` on a key. It defaults to `aes-256-gcm`.
+
+| Algorithm | Use when | Notes |
+| --- | --- | --- |
+| `aes-256-gcm` (default) | You want the standard choice | AES-256-GCM is a FIPS-approved algorithm; using it does not make the router a FIPS-validated module. Hardware-accelerated on modern CPUs. |
+| `aes-256-gcm-siv` | Your write volume is very high | Remains secure if a nonce is ever reused, so it tolerates the random-nonce limit below. Slightly slower than GCM. |
+| `chacha20-poly1305` | Your hosts lack AES hardware acceleration | Fast in software. Not FIPS-approved. |
+
+The router picks a random 96-bit nonce for every value it encrypts. For `aes-256-gcm` and `chacha20-poly1305`, keep each key below about 2<sup>32</sup> encryptions, then rotate it. Rotate well before that limit, and alert on the number of encryptions per `key_id` (see the `apollo.router.operations.response_cache.encryption` [metric](/router/performance/caching/response-caching/observability#encryption)), for example when a key passes 2<sup>31</sup> encryptions.
+
+Each value is also bound to its cache key, so a value copied to another key in Redis fails to decrypt.
+
+### Rotate keys
+
+List keys that should only decrypt under `previous_keys`:
+
+```yaml title="router.yaml"
+      encryption:
+        key:
+          id: "2026-10"
+          secret: "${env.RESPONSE_CACHE_KEY}"
+        previous_keys:
+          - id: "2026-07"
+            secret: "${env.RESPONSE_CACHE_KEY_OLD}"
+```
+
+Rotate in three steps, so routers that roll out at different times never miss:
+
+1. Add the new key to `previous_keys` on every router and roll that out.
+2. Make the new key the active `key`, move the old one to `previous_keys`, and roll that out.
+3. Remove the old key once nothing it encrypted can still be read: the decrypt count for the old `key_id` has stayed at zero, and the longest entry lifetime has passed. Entries live for the subgraph's `Cache-Control: max-age` when it sends one, and for the configured `ttl` otherwise. The `ttl` doesn't cap a subgraph's `max-age`, so an entry can outlive it.
+
+Changing the `algorithm` follows the same steps, because each key has its own `algorithm`: add a new key with the new algorithm, make it active, and keep the old key under `previous_keys` until it is no longer used.
+
+A one-step swap also works, but routers that don't have the new key yet treat entries encrypted with it as cache misses during the rollout. Nothing breaks. The hit rate dips briefly.
+
+If a key is compromised, replace the key and remove the old one. Every entry written with the old key becomes a cache miss. To remove them from Redis right away, delete the keys in the cache `namespace`.
+
+### Apply a key change
+
+- The router reads `${file.X}` and `${env.X}` values when it parses `router.yaml`.
+- With `--hot-reload`, changing `router.yaml` reloads the router and reads the files and environment variables again.
+- Changing only a key file doesn't reload the router, because only `router.yaml` is watched. Edit or touch `router.yaml` to apply a new key file.
+- A `SIGHUP` reloads the router with the configuration it already parsed, so it doesn't read key files again.
+- A running router can't see a changed environment variable. Restart the router to apply one.
+
+### Turn encryption on or off
+
+- **Turning it on:** values already in Redis are plain, and the router doesn't use them. They count as cache misses (`plaintext_rejected`) until they expire, and new values are written encrypted.
+- **Turning it off:** values already encrypted can't be read without encryption configured. They count as cache misses until they expire.
+- **A value that can't be used** (unknown key, a value that fails authentication, or a malformed value) is a cache miss for that value only. The rest of a batch is still served from the cache, and the failure is recorded in the `apollo.router.operations.response_cache.fetch.error` and `apollo.router.operations.response_cache.encryption` metrics.
+
 ## Suppressing the `Cache-Control` client response header
 
 By default, router includes a `Cache-Control` header in the supergraph response sent to clients, reflecting the computed cache policy—for example, `Cache-Control: max-age=300, public`.
