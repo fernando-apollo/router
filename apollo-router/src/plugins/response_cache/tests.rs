@@ -5805,6 +5805,99 @@ async fn connector_values_are_encrypted_in_redis_and_served_from_cache() {
     .await
 }
 
+/// Waits until the value Redis holds under `key` is something else than `old`, and returns it.
+async fn wait_for_raw_value_to_change(storage: &Storage, key: &str, old: &str) -> String {
+    let mut interval_stream =
+        IntervalStream::new(tokio::time::interval(Duration::from_millis(100))).take(50);
+    while interval_stream.next().await.is_some() {
+        if let Some(value) = storage.raw_value_for_test(key).await
+            && value != old
+        {
+            return value;
+        }
+    }
+    panic!("the value under {key} did not change");
+}
+
+/// A cached value that can't be used (here, an envelope someone tampered with) is a miss: the
+/// client gets the connector's data and no error, and the router writes a valid value back.
+#[tokio::test]
+async fn connector_corrupt_cached_value_is_a_miss_and_is_rewritten() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/users"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("cache-control", "public, max-age=300")
+                .set_body_json(serde_json::json!([
+                    {"id": 1, "name": "Alice"},
+                    {"id": 2, "name": "Bob"}
+                ])),
+        )
+        .mount(&mock_server)
+        .await;
+    let uri = mock_server.uri();
+    let namespace = Uuid::new_v4().to_string();
+    let encryption = || {
+        Some(serde_json_bytes::json!({
+            "response_cache": { "connector": { "all": { "encryption": {
+                // 32 zero bytes: a placeholder, not a secret
+                "key": { "id": "k1", "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }
+            } } } }
+        }))
+    };
+
+    let service = create_connector_cache_service(&uri, &namespace, encryption()).await;
+    let response = service
+        .oneshot(make_connector_cache_request("query { users { id name } }"))
+        .await
+        .unwrap();
+    let first_context = response.context.clone();
+    let first_body = connector_response_body(response).await;
+    assert!(first_body.get("data").is_some(), "{first_body:?}");
+
+    let cache_keys: CacheKeysContext = first_context
+        .get(super::plugin::CONTEXT_DEBUG_CACHE_KEYS)
+        .unwrap()
+        .expect("debug cache keys context missing — was the debug header set?");
+    let keys = expected_cached_keys(&cache_keys);
+    let (_drop_tx, drop_rx) = tokio::sync::broadcast::channel(2);
+    let storage = Storage::new(&Config::test(false, &namespace), drop_rx)
+        .await
+        .unwrap();
+    let mut tampered = Vec::new();
+    for (key, value) in keys.iter().zip(wait_for_raw_values(&storage, &keys).await) {
+        let mut envelope: serde_json::Value = serde_json::from_str(&value).unwrap();
+        envelope["ct"] = "AAAAAAAAAAAAAAAAAAAAAAAA".into();
+        let envelope = envelope.to_string();
+        storage.raw_set_for_test(key, &envelope).await;
+        tampered.push(envelope);
+    }
+
+    // A second router, so nothing is held in memory: it has to read the corrupt value.
+    let received_before = mock_requests_for_path(&mock_server, "/users").await;
+    let service = create_connector_cache_service(&uri, &namespace, encryption()).await;
+    let response = service
+        .oneshot(make_connector_cache_request("query { users { id name } }"))
+        .await
+        .unwrap();
+    let second_body = connector_response_body(response).await;
+
+    assert_eq!(first_body["data"], second_body["data"]);
+    assert!(second_body.get("errors").is_none(), "{second_body:?}");
+    assert!(
+        mock_requests_for_path(&mock_server, "/users").await > received_before,
+        "the corrupt value is a miss, so the connector is called again"
+    );
+    for (key, tampered) in keys.iter().zip(&tampered) {
+        let rewritten = wait_for_raw_value_to_change(&storage, key, tampered).await;
+        assert!(
+            rewritten.starts_with(r#"{"enc":1,"kid":"k1""#),
+            "{rewritten}"
+        );
+    }
+}
+
 /// A root-field response whose mapping declared errors (`->withError`) is not stored. The cache
 /// entry has no place for declared errors, so a hit would return the data without the
 /// `extensions.connectorErrors` the first client was sent.

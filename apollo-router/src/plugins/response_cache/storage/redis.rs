@@ -727,6 +727,19 @@ impl Storage {
         self.send_to_maintenance_queue(key);
     }
 
+    /// Overwrites the value Redis holds under `key` with `value`, as anything with access to Redis
+    /// could.
+    pub(crate) async fn raw_set_for_test(&self, key: &str, value: &str) {
+        let _: () = self
+            .storage
+            .client()
+            .await
+            .unwrap()
+            .set(self.make_key(key), value, None, None, false)
+            .await
+            .unwrap();
+    }
+
     /// The value Redis holds under `key`, undecoded: what an attacker with access to Redis sees.
     pub(crate) async fn raw_value_for_test(&self, key: &str) -> Option<String> {
         self.storage
@@ -2329,6 +2342,7 @@ mod tests {
         use apollo_redaction::Redacted;
         use base64::Engine as _;
         use base64::prelude::BASE64_STANDARD;
+        use fred::interfaces::HashesInterface;
         use fred::interfaces::KeysInterface;
         use tokio::sync::broadcast;
         use tower::BoxError;
@@ -2552,16 +2566,30 @@ mod tests {
                     .set(storage.make_key(key), value, None, None, false)
                     .await?;
             }
-            let keys = ["plain", "bad-envelope", "garbage", "binary", "good"];
+            // A key that holds something else than a string, like a hash.
+            let _: () = client
+                .hset(storage.make_key("wrong-type"), ("field", "value"))
+                .await?;
+            let keys = [
+                "plain",
+                "bad-envelope",
+                "garbage",
+                "binary",
+                "wrong-type",
+                "good",
+            ];
 
             let results = storage
                 .internal_fetch_multiple(&keys, SUBGRAPH_NAME)
                 .await?;
 
-            let codes: Vec<_> = results
+            let mut codes: Vec<_> = results
                 .iter()
                 .map(|result| result.as_ref().err().map(ErrorCode::code))
                 .collect();
+            // Redis answers a lookup of the wrong type with an error (clustered) or with nothing
+            // (an `MGET`): either way it is a miss for that key only.
+            assert!(codes.remove(4).is_some(), "the wrong type should be a miss");
             assert_eq!(
                 codes,
                 vec![
@@ -2574,7 +2602,108 @@ mod tests {
             );
             let hits = storage.fetch_multiple(&keys, SUBGRAPH_NAME).await?;
             assert_eq!(hits.iter().filter(|hit| hit.is_some()).count(), 1);
+
+            // Writing the value again replaces whatever was there.
+            storage
+                .insert(document("wrong-type"), SUBGRAPH_NAME)
+                .await?;
+            assert!(storage.fetch("wrong-type", SUBGRAPH_NAME).await.is_ok());
             Ok(())
+        }
+
+        #[tokio::test]
+        #[rstest::rstest]
+        async fn a_value_that_decrypts_to_something_else_is_a_miss(
+            #[values(true, false)] clustered: bool,
+        ) -> Result<(), BoxError> {
+            let encryption = scoped(
+                &config(key("k1", 1, Algorithm::Aes256Gcm), Vec::new()),
+                Vec::new(),
+            );
+            let storage = storage(&redis_config(clustered), Some(encryption.clone())).await?;
+            storage.truncate_namespace().await?;
+            storage.insert(document("good"), SUBGRAPH_NAME).await?;
+            // Sealed with a valid key, but what it holds is not a cache value.
+            let sealed = encryption
+                .seal(
+                    SUBGRAPH_NAME,
+                    "not-a-cache-value",
+                    r#"["not","a","cache value"]"#.to_string(),
+                )
+                .unwrap();
+            let _: () = storage
+                .storage
+                .client()
+                .await?
+                .set(
+                    storage.make_key("not-a-cache-value"),
+                    sealed,
+                    None,
+                    None,
+                    false,
+                )
+                .await?;
+
+            let results = storage
+                .internal_fetch_multiple(&["not-a-cache-value", "good"], SUBGRAPH_NAME)
+                .await?;
+
+            let codes: Vec<_> = results
+                .iter()
+                .map(|result| result.as_ref().err().map(ErrorCode::code))
+                .collect();
+            assert_eq!(codes, vec![Some("Serialize::Data"), None]);
+            Ok(())
+        }
+
+        /// An operator edits the `secret` of a key but keeps its `id`, between two restarts.
+        #[tokio::test]
+        #[rstest::rstest]
+        async fn the_same_key_id_with_another_secret_is_a_miss_until_it_is_rewritten(
+            #[values(true, false)] clustered: bool,
+        ) -> Result<(), BoxError> {
+            async move {
+                let redis = redis_config(clustered);
+                let secret_a = scoped(
+                    &config(key("k1", 1, Algorithm::Aes256Gcm), Vec::new()),
+                    Vec::new(),
+                );
+                let secret_b = scoped(
+                    &config(key("k1", 2, Algorithm::Aes256Gcm), Vec::new()),
+                    Vec::new(),
+                );
+                let before = storage(&redis, Some(secret_a)).await?;
+                before.truncate_namespace().await?;
+                before.insert(document("old"), SUBGRAPH_NAME).await?;
+                let after = storage(&redis, Some(secret_b)).await?;
+                after.insert(document("new"), SUBGRAPH_NAME).await?;
+
+                let results = after
+                    .internal_fetch_multiple(&["old", "new"], SUBGRAPH_NAME)
+                    .await?;
+
+                let codes: Vec<_> = results
+                    .iter()
+                    .map(|result| result.as_ref().err().map(ErrorCode::code))
+                    .collect();
+                assert_eq!(codes, vec![Some("Encryption::Decrypt"), None]);
+                assert_counter!(
+                    "apollo.router.operations.response_cache.encryption",
+                    1,
+                    "operation" = "decrypt",
+                    "key_id" = "k1",
+                    "algorithm" = "aes-256-gcm",
+                    "subgraph.name" = SUBGRAPH_NAME,
+                    "outcome" = "decrypt_failed"
+                );
+
+                // Writing the entry again with the new secret replaces it, and then it is a hit.
+                after.insert(document("old"), SUBGRAPH_NAME).await?;
+                assert!(after.fetch("old", SUBGRAPH_NAME).await.is_ok());
+                Ok(())
+            }
+            .with_metrics()
+            .await
         }
 
         #[tokio::test]

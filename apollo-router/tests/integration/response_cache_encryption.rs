@@ -305,3 +305,61 @@ async fn values_sealed_with_a_removed_key_are_misses() {
     new.assert_encryption_counter("k2", "decrypt", "success", 1)
         .await;
 }
+
+/// The cached values in `namespace`, sorted, as Redis holds them.
+async fn cached_values(namespace: &str) -> Vec<String> {
+    let client = redis_client().await;
+    let mut values = Vec::new();
+    let mut keys = client.scan(format!("{namespace}:*"), Some(100), Some(ScanType::String));
+    while let Some(page) = keys.next().await {
+        for key in page.unwrap().take_results().unwrap_or_default() {
+            values.extend(client.get::<Option<String>, _>(key).await.unwrap());
+        }
+    }
+    values.sort();
+    values
+}
+
+/// Waits until the cached values in `namespace` are no longer `before`.
+async fn wait_for_values_to_change(namespace: &str, before: &[String]) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while cached_values(namespace).await == before {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the cached values in {namespace} to change"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// An operator edits the `secret` of a key but keeps its `id`: what the key sealed can't be
+/// opened, which is a miss, and the entry is rewritten with the new secret.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_same_key_id_with_another_secret_is_a_miss_and_a_rewrite() {
+    let namespace = namespace();
+    let mut old = Member::start(&namespace, encryption(key("k1", 1), vec![])).await;
+    let mut edited = Member::start(&namespace, encryption(key("k1", 9), vec![])).await;
+
+    assert_eq!(old.query(QUERY_NAMES).await, 1);
+    wait_for_sealed(&namespace, "k1", 1).await;
+    let before = cached_values(&namespace).await;
+
+    assert_eq!(
+        edited.query(QUERY_NAMES).await,
+        1,
+        "the old secret is gone: a miss"
+    );
+    edited
+        .assert_encryption_counter("k1", "decrypt", "decrypt_failed", 1)
+        .await;
+    wait_for_values_to_change(&namespace, &before).await;
+
+    assert_eq!(
+        edited.query(QUERY_NAMES).await,
+        0,
+        "the entry was rewritten"
+    );
+    edited
+        .assert_encryption_counter("k1", "decrypt", "success", 1)
+        .await;
+}

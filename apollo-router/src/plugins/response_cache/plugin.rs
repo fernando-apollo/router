@@ -4134,6 +4134,71 @@ mod tests {
         );
     }
 
+    /// The connection that is made after startup (when Redis was unreachable and
+    /// `required_to_start` is false) goes through `attempt_connection` too, so it must keep
+    /// encrypting.
+    #[tokio::test]
+    async fn a_connection_made_after_startup_encrypts() {
+        use base64::Engine as _;
+
+        use std::sync::OnceLock;
+
+        use crate::plugins::response_cache::cache_tag::CacheScope;
+        use crate::plugins::response_cache::plugin::attempt_connection;
+        use crate::plugins::response_cache::storage;
+        use crate::plugins::response_cache::storage::CacheStorage as _;
+        use crate::plugins::response_cache::storage::encryption::Algorithm;
+        use crate::plugins::response_cache::storage::encryption::CacheEncryption;
+        use crate::plugins::response_cache::storage::encryption::EncryptionConfig;
+        use crate::plugins::response_cache::storage::encryption::KeyConfig;
+        use crate::plugins::response_cache::storage::encryption::ScopeEncryptionConfig;
+
+        let namespace = Uuid::new_v4().to_string();
+        let encryption = EncryptionConfig {
+            key: KeyConfig {
+                id: "k1".to_string(),
+                algorithm: Algorithm::default(),
+                secret: apollo_redaction::Redacted::new(
+                    base64::prelude::BASE64_STANDARD.encode([1u8; 32]),
+                ),
+            },
+            previous_keys: Vec::new(),
+        };
+        let keyring = Arc::new(
+            CacheEncryption::new(
+                ScopeEncryptionConfig {
+                    all: Some(&encryption),
+                    overrides: Vec::new(),
+                },
+                ScopeEncryptionConfig {
+                    all: None,
+                    overrides: Vec::new(),
+                },
+            )
+            .unwrap()
+            .unwrap(),
+        );
+        let cell = Arc::new(OnceLock::new());
+        let (_drop_tx, drop_rx) = broadcast::channel(2);
+
+        attempt_connection(
+            &storage::redis::Config::test(false, &namespace),
+            cell.clone(),
+            drop_rx,
+            keyring.for_scope(CacheScope::Subgraph),
+        )
+        .await
+        .unwrap();
+
+        let storage = cell.get().unwrap();
+        storage
+            .insert(document_with_secret("late"), "user")
+            .await
+            .unwrap();
+        let stored = storage.raw_value_for_test("late").await.unwrap();
+        assert!(stored.starts_with(r#"{"enc":1,"kid":"k1""#), "{stored}");
+    }
+
     #[tokio::test]
     async fn a_bad_encryption_key_fails_startup_without_showing_the_secret() {
         // 16 bytes, base64-encoded
